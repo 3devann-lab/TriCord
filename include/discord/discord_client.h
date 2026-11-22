@@ -212,6 +212,9 @@ class DiscordClient {
 
 	void fetchMessagesAsync(const std::string &channelId, int limit, MessagesCallback cb,
 	                        const std::string &around = "");
+	// The last 50 messages fetched for this channel, from the SD card. Never calls back when
+	// there is nothing cached.
+	void loadCachedMessagesAsync(const std::string &channelId, MessagesCallback cb);
 	void fetchMessagesBeforeAsync(const std::string &channelId, const std::string &beforeId, int limit,
 	                              MessagesCallback cb);
 	void fetchMessage(const std::string &channelId, const std::string &messageId, SingleMessageCallback cb);

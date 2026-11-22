@@ -2,6 +2,8 @@
 #include "utils/system_utils.h"
 #include "network/dns.h"
 #include "core/system_status.h"
+#include "network/media_cache.h"
+#include "utils/file_utils.h"
 #include "utils/redraw.h"
 #include "core/config.h"
 #include "core/i18n.h"
@@ -284,6 +286,22 @@ void SettingsScreen::onEnter() {
 	debugShortcuts.valueFormatter = [](int val) { return (val == 1) ? TR("common.enabled") : TR("common.disabled"); };
 	debugShortcuts.onUpdate = [](int val) { Config::getInstance().setDebugShortcutsEnabled(val == 1); };
 	allItems.push_back(debugShortcuts);
+
+	allItems.push_back(makeToggle("image_cache", Config::getInstance().isImageCacheEnabled(),
+	                              [](bool on) { Config::getInstance().setImageCacheEnabled(on); }));
+	allItems.push_back(makeToggle("message_cache", Config::getInstance().isMessageCacheEnabled(),
+	                              [](bool on) { Config::getInstance().setMessageCacheEnabled(on); }));
+
+	SettingItem clearCache;
+	clearCache.label = TR("settings.clear_cache");
+	clearCache.description = Core::I18n::format(TR("settings.desc.clear_cache"),
+	                                            Utils::File::formatSize((long long)Network::MediaCache::sizeBytes()));
+	clearCache.type = SettingItemType::ACTION;
+	clearCache.action = []() {
+		Network::MediaCache::clearAll();
+		ScreenManager::getInstance().showToast(TR("settings.cache_cleared"));
+	};
+	allItems.push_back(clearCache);
 
 	// DEVELOPER
 	SettingItem devSection;

@@ -483,5 +483,14 @@
     "settings.status_bar": "Battery & Wi-Fi Icons",
     "settings.desc.status_bar": "Show battery level and Wi-Fi strength in the top-right corner of the bottom screen.",
     "message.last_channel": "That's the last channel",
-    "message.first_channel": "That's the first channel"
+    "message.first_channel": "That's the first channel",
+    "message.cache_updating": "Showing saved messages, updating...",
+    "message.cache_stale": "Couldn't refresh; showing saved messages",
+    "settings.image_cache": "Save Images to SD",
+    "settings.desc.image_cache": "Keep avatars, server icons, emoji and images on the SD card so they load instantly next time and use less data (up to about 48 MB).",
+    "settings.message_cache": "Save Messages to SD",
+    "settings.desc.message_cache": "Keep the last 50 messages of channels you open on the SD card, so they show instantly while new ones load, and stay readable when the connection drops.",
+    "settings.clear_cache": "Clear Saved Images & Messages",
+    "settings.desc.clear_cache": "Deletes everything TriCord has saved to the SD card for faster loading. Currently using about {0}.",
+    "settings.cache_cleared": "Saved images and messages cleared"
 }

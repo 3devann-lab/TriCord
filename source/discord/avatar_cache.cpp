@@ -1,4 +1,5 @@
 #include "discord/avatar_cache.h"
+#include "network/media_cache.h"
 #include "core/config.h"
 #include "network/network_manager.h"
 #include "ui/image_manager.h"
@@ -210,8 +211,8 @@ void AvatarCache::startFetchLocked(const std::string &key, const std::string &ur
 	info.lastUsedFrame = frameCounter;
 	cache[key] = info;
 
-	Network::NetworkManager::getInstance().enqueue(
-	    url, "GET", "", Network::RequestPriority::BACKGROUND, [this, key, cornerRatio](Network::HttpResponse &resp) {
+	Network::MediaCache::fetch(
+	    url, Network::RequestPriority::BACKGROUND, [this, key, cornerRatio](Network::HttpResponse &resp) {
 		    if (resp.statusCode != 200 || resp.body.empty()) {
 			    std::lock_guard<std::recursive_mutex> lock(cacheMutex);
 			    markFailedLocked(key);

@@ -1,3 +1,5 @@
+#include "network/media_cache.h"
+#include "utils/file_utils.h"
 #include "core/system_status.h"
 #include "utils/markdown.h"
 #include "discord/discord_client.h"
@@ -3522,12 +3524,16 @@ void DiscordClient::fetchMessagesAsync(const std::string &channelId, int limit, 
 		url += "&around=" + aroundId;
 	}
 
+	bool cacheable = aroundId.empty() && limit >= 50;
 	Network::NetworkManager::getInstance().enqueue(
 	    url, "GET", "", Network::RequestPriority::INTERACTIVE,
-	    [this, cb, channelId](const Network::HttpResponse &resp) {
+	    [this, cb, channelId, cacheable](const Network::HttpResponse &resp) {
 		    std::vector<Message> messages;
 		    if (resp.success && resp.statusCode == 200) {
 			    messages = parseMessages(resp.body);
+			    if (cacheable && !messages.empty()) {
+				    Network::MediaCache::storeMessages(getCurrentUser().id, channelId, resp.body);
+			    }
 			    if (messages.empty()) {
 
 				    Logger::log("Fetched 0 messages for channel %s. Body len: %zu", channelId.c_str(),
@@ -3599,6 +3605,23 @@ void DiscordClient::fetchMessage(const std::string &channelId, const std::string
 		                                               }
 	                                               },
 	                                               {{"Authorization", token}});
+}
+
+void DiscordClient::loadCachedMessagesAsync(const std::string &channelId, MessagesCallback cb) {
+	std::string userId = getCurrentUser().id;
+	if (!Config::getInstance().isMessageCacheEnabled() || userId.empty() || channelId.empty()) {
+		return;
+	}
+	Network::MediaCache::runJob([this, userId, channelId, cb] {
+		std::vector<char> raw = Utils::File::readFile(Network::MediaCache::messagesPath(userId, channelId));
+		if (raw.empty()) {
+			return;
+		}
+		std::vector<Message> messages = parseMessages(std::string(raw.data()));
+		if (!messages.empty() && cb) {
+			cb(messages);
+		}
+	});
 }
 
 std::vector<Message> DiscordClient::parseMessages(const std::string &json) {

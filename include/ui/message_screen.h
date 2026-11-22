@@ -179,6 +179,11 @@ class MessageScreen : public Screen {
 	std::vector<std::string> revertChosen;
 	std::string revertChosenLabel;
 	bool wasAtBottom = false;
+	// Showing the SD card copy while the real history loads.
+	bool showingCached = false;
+	bool freshHistoryLoaded = false;
+	bool isScrolledToBottom() const;
+	bool selectMessageById(const std::string &id);
 	std::string lastMarkedMessageId;
 	std::vector<std::string> menuOptions;
 	std::vector<std::string> menuActions;

@@ -556,6 +556,23 @@ void MessageScreen::onEnter() {
 			isLoading = false;
 		});
 	} else {
+		// The last copy on the SD card shows at once; the fetch below replaces it.
+		client.loadCachedMessagesAsync(channelId, [this, token = aliveToken](
+		                                              const std::vector<Discord::Message> &cached) {
+			if (!*token) {
+				return;
+			}
+			std::lock_guard<std::recursive_mutex> lock(messageMutex);
+			if (!*token || !isLoading || freshHistoryLoaded) {
+				return;
+			}
+			replaceHistory(cached);
+			rebuildLayoutCache();
+			scrollToBottom();
+			showingCached = true;
+			isLoading = false;
+			Utils::requestRedraw();
+		});
 		client.fetchMessagesAsync(channelId, 50,
 		                          [this, token = aliveToken](const std::vector<Discord::Message> &fetched) {
 			                          if (!*token) {
@@ -566,11 +583,27 @@ void MessageScreen::onEnter() {
 				                          if (!*token) {
 					                          return;
 				                          }
-				                          replaceHistory(fetched);
-				                          rebuildLayoutCache();
-				                          scrollToBottom();
+				                          freshHistoryLoaded = true;
+				                          if (fetched.empty() && showingCached) {
+					                          // Offline or failed: keep the cached copy on screen.
+					                          pendingToastText = TR("message.cache_stale");
+				                          } else {
+					                          std::string keepSelected;
+					                          if (showingCached && selectedIndex >= 0 &&
+					                              selectedIndex < (int)messages.size()) {
+						                          keepSelected = messages[selectedIndex].id;
+					                          }
+					                          bool atBottom = !showingCached || isScrolledToBottom();
+					                          replaceHistory(fetched);
+					                          rebuildLayoutCache();
+					                          if (atBottom || !selectMessageById(keepSelected)) {
+						                          scrollToBottom();
+					                          }
+				                          }
+				                          showingCached = false;
 			                          }
 			                          isLoading = false;
+			                          Utils::requestRedraw();
 			                          Discord::DiscordClient::getInstance().markChannelReadLatest(
 			                              this->channelId, fetched.empty() ? "" : fetched.front().id);
 		                          });
@@ -3303,6 +3336,13 @@ void MessageScreen::renderTop(C3D_RenderTarget *target) {
 		drawCenteredRichText(indicatorY + 5.0f, 0.66f, 0.4f, 0.4f, ScreenManager::colorWhite(), text, 400.0f);
 	}
 
+	if (showingCached) {
+		std::string text = TR("message.cache_updating");
+		float w = measureText(text, 0.38f, 0.38f) + 16.0f;
+		drawRoundedRect((400.0f - w) / 2.0f, 4.0f, 0.65f, w, 16.0f, 8.0f, ScreenManager::colorBackgroundDark());
+		drawCenteredRichText(6.5f, 0.66f, 0.38f, 0.38f, ScreenManager::colorTextMuted(), text, 400.0f);
+	}
+
 	if (isMenuOpen) {
 		renderMenu();
 	}
@@ -3996,6 +4036,25 @@ void MessageScreen::syncScrollAfterRebuild(bool wasAtBottom, bool updateSelectio
 		targetScrollY = maxScroll;
 		currentScrollY = maxScroll;
 	}
+}
+
+bool MessageScreen::isScrolledToBottom() const {
+	float maxScroll = std::max(0.0f, totalContentHeight - 240.0f);
+	return targetScrollY >= maxScroll - 5.0f;
+}
+
+bool MessageScreen::selectMessageById(const std::string &id) {
+	if (id.empty()) {
+		return false;
+	}
+	for (int i = 0; i < (int)messages.size(); i++) {
+		if (messages[i].id == id) {
+			selectedIndex = i;
+			ensureSelectionVisible();
+			return true;
+		}
+	}
+	return false;
 }
 
 void MessageScreen::scrollToBottom() {
