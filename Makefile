@@ -83,7 +83,18 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17 -Wno-psabi
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,--gc-sections -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lcitro2d -lcitro3d -lctru -lm
+LIBS	:= -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lturbojpeg -lz -lcitro2d -lcitro3d -lctru -lm
+
+#---------------------------------------------------------------------------------
+# Video playback links against the FFmpeg that scripts/build_ffmpeg.sh builds into
+# library/ffmpeg. Without it TriCord still builds, minus the video player.
+#---------------------------------------------------------------------------------
+FFMPEG_DIR	:=	$(TOPDIR)/library/ffmpeg
+ifneq ("$(wildcard $(FFMPEG_DIR)/lib/libavcodec.a)","")
+	CFLAGS	+=	-DTRICORD_HAVE_FFMPEG -I$(FFMPEG_DIR)/include
+	CXXFLAGS	+=	-DTRICORD_HAVE_FFMPEG -I$(FFMPEG_DIR)/include
+	LIBS	:=	-L$(FFMPEG_DIR)/lib -lavformat -lavcodec -lswscale -lswresample -lavutil $(LIBS)
+endif
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -185,13 +196,17 @@ ifeq ($(strip $(NO_SMDH)),)
 	export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 endif
 
-.PHONY: all clean cia bootstrap
+.PHONY: all clean cia 3dsx bootstrap
 
 #---------------------------------------------------------------------------------
 all: bootstrap $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 cia : bootstrap $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile $@
+
+# Builds only the .3dsx, for setups without makerom and bannertool.
+3dsx : bootstrap $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile $@
 
 bootstrap :
@@ -294,9 +309,11 @@ endif
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-.PHONY: all cia
+.PHONY: all cia 3dsx
 
 all: $(OUTPUT).3dsx $(OUTPUT).cia
+
+3dsx: $(OUTPUT).3dsx
 
 $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 

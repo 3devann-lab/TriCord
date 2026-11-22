@@ -1,9 +1,13 @@
 #ifndef HTTP_CLIENT_H
 #define HTTP_CLIENT_H
 
+#include <atomic>
+#include <cstdint>
 #include <curl/curl.h>
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace Network {
 
@@ -16,17 +20,49 @@ struct HttpResponse {
 	std::string error;
 };
 
+// One field of a multipart/form-data body. A part with a filePath is streamed
+// from the SD card rather than held in memory.
+struct MultipartPart {
+	std::string name;
+	std::string data;
+	std::string filePath;
+	std::string filename;
+	std::string contentType;
+};
+
+// Shared between the transfer and whoever shows it, so progress can be read
+// from the UI thread and a transfer can be called off from there.
+struct TransferProgress {
+	std::atomic<int64_t> done{0};
+	std::atomic<int64_t> total{0};
+	std::atomic<bool> cancel{false};
+};
+
 struct HttpRequest {
 	std::string url;
 	std::string method;
 	std::string body;
 	std::map<std::string, std::string> headers;
 	long timeoutSeconds;
+	// Sent as multipart/form-data instead of body when not empty.
+	std::vector<MultipartPart> multipart = {};
+	// The response body goes to this file instead of HttpResponse::body.
+	std::string downloadPath = {};
+	std::shared_ptr<TransferProgress> progress = nullptr;
+};
+
+// What a transfer holds on to until it finishes.
+struct TransferResources {
+	curl_slist *headers = nullptr;
+	curl_mime *mime = nullptr;
+	FILE *file = nullptr;
+
+	void release();
 };
 
 const std::string &clientProperties();
 void initHttpDefaults();
-curl_slist *prepareTransfer(CURL *easy, const HttpRequest &request, HttpResponse &response);
+TransferResources prepareTransfer(CURL *easy, const HttpRequest &request, HttpResponse &response);
 
 class HttpClient {
   public:

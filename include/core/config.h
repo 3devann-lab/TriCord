@@ -132,6 +132,12 @@ class Config {
 	int getMicVolume() const { return micVolume; }
 	void setMicVolume(int volumePercent);
 
+	// New 3DS hardware H.264 decoding for the video player.
+	bool isHardwareVideoEnabled() const { return hardwareVideo; }
+	void setHardwareVideoEnabled(bool enabled);
+	int getVideoVolume() const { return videoVolume; }
+	void setVideoVolume(int volumePercent);
+
 	int getUserVolume(const std::string &userId) const;
 	void setUserVolume(const std::string &userId, int volumePercent);
 
@@ -157,6 +163,8 @@ class Config {
 	bool showHiddenChannels;
 
 	int micVolume;
+	bool hardwareVideo = true;
+	int videoVolume = 100;
 	std::unordered_map<std::string, int> userVolumes;
 
 	bool customThemeEnabled;

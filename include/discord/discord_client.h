@@ -22,7 +22,8 @@
 
 namespace Network {
 struct HttpResponse;
-}
+struct TransferProgress;
+} // namespace Network
 
 namespace Discord {
 
@@ -63,6 +64,19 @@ struct LoginResult {
 };
 
 using LoginCallback = std::function<void(const LoginResult &result)>;
+using FavoriteGifsCallback = std::function<void(bool success, const std::vector<FavoriteGif> &gifs)>;
+
+struct UploadRequest {
+	std::string channelId;
+	// Where the file is on the SD card.
+	std::string path;
+	// The name Discord shows; the file's own name when empty.
+	std::string filename;
+	std::string caption;
+	std::string replyId;
+	std::string nonce;
+	bool spoiler = false;
+};
 using MfaSmsCallback = std::function<void(bool success, const std::string &phoneOrError)>;
 using ErrorCallback = std::function<void(const std::string &error)>;
 using JsonPull = Utils::Json::Pull<Network::JsonInputStream>;
@@ -201,6 +215,15 @@ class DiscordClient {
 	void sendMessageAsync(const std::string &channelId, const std::string &content, SuccessCallback cb);
 	void sendReply(const std::string &channelId, const std::string &content, const std::string &replyId,
 	               SendMessageCallback cb = nullptr, const std::string &nonce = "");
+	// Streams a file from the SD card as a message attachment, with an optional caption.
+	void uploadFile(const UploadRequest &request, std::shared_ptr<Network::TransferProgress> progress,
+	                SendMessageCallback cb);
+	// The largest attachment Discord accepts from this account.
+	long long getUploadLimitBytes();
+	// Reads the favorite GIFs from the frecency settings proto, most recent first.
+	void fetchFavoriteGifs(FavoriteGifsCallback cb);
+	// A small animated GIF to show in place of a favorite, which is usually an MP4. Empty when none is known.
+	static std::string favoriteGifPreviewUrl(const FavoriteGif &gif);
 	bool editMessage(const std::string &channelId, const std::string &messageId, const std::string &content);
 	void editMessageAsync(const std::string &channelId, const std::string &messageId, const std::string &content,
 	                      SuccessCallback cb);

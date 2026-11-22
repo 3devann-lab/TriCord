@@ -133,6 +133,10 @@ curl_slist *buildHeaderList(const HttpRequest &request) {
 	curl_slist *list = nullptr;
 
 	for (const DefaultHeader &header : defaultHeaders) {
+		// curl writes the multipart Content-Type itself, boundary included.
+		if (!request.multipart.empty() && header.name == "Content-Type") {
+			continue;
+		}
 		if ((discord || !header.discordOnly) && request.headers.find(header.name) == request.headers.end()) {
 			list = curl_slist_append(list, header.line.c_str());
 		}
@@ -158,6 +162,27 @@ size_t receiveBody(void *contents, size_t size, size_t nmemb, void *userp) {
 	}
 	body->append(static_cast<char *>(contents), len);
 	return len;
+}
+
+size_t writeBodyToFile(void *contents, size_t size, size_t nmemb, void *userp) {
+	FILE *file = static_cast<FILE *>(userp);
+	if (!file) {
+		return 0;
+	}
+	return fwrite(contents, size, nmemb, file) * size;
+}
+
+int reportProgress(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+	auto *progress = static_cast<TransferProgress *>(clientp);
+	if (ultotal > 0) {
+		progress->total = ultotal;
+		progress->done = ulnow;
+	} else {
+		progress->total = dltotal;
+		progress->done = dlnow;
+	}
+	// Non-zero aborts the transfer with CURLE_ABORTED_BY_CALLBACK.
+	return progress->cancel ? 1 : 0;
 }
 
 bool headerIs(const char *line, size_t len, const char *name) {
@@ -193,6 +218,44 @@ size_t receiveHeader(char *line, size_t size, size_t nitems, void *userdata) {
 	return len;
 }
 
+// Only reserves the body when it is going to memory.
+size_t receiveHeaderNoReserve(char *line, size_t size, size_t nitems, void *userdata) {
+	auto *response = static_cast<HttpResponse *>(userdata);
+	const size_t len = size * nitems;
+	if (headerIs(line, len, "Date")) {
+		response->date = headerValue(line, len, 4);
+	} else if (headerIs(line, len, "Retry-After")) {
+		response->retryAfter = headerValue(line, len, 11);
+	}
+	return len;
+}
+
+curl_mime *buildMime(CURL *easy, const std::vector<MultipartPart> &parts) {
+	curl_mime *mime = curl_mime_init(easy);
+	if (!mime) {
+		return nullptr;
+	}
+	for (const MultipartPart &part : parts) {
+		curl_mimepart *field = curl_mime_addpart(mime);
+		curl_mime_name(field, part.name.c_str());
+		if (!part.filePath.empty()) {
+			if (curl_mime_filedata(field, part.filePath.c_str()) != CURLE_OK) {
+				curl_mime_free(mime);
+				return nullptr;
+			}
+		} else {
+			curl_mime_data(field, part.data.data(), part.data.size());
+		}
+		if (!part.filename.empty()) {
+			curl_mime_filename(field, part.filename.c_str());
+		}
+		if (!part.contentType.empty()) {
+			curl_mime_type(field, part.contentType.c_str());
+		}
+	}
+	return mime;
+}
+
 CURLcode useSharedCaChain(CURL *, void *sslConfig, void *) {
 	mbedtls_ssl_conf_ca_chain(static_cast<mbedtls_ssl_config *>(sslConfig), sharedCaChain(), nullptr);
 	return CURLE_OK;
@@ -222,7 +285,21 @@ void initHttpDefaults() {
 	                 Utils::Base64::encode((const unsigned char *)properties.data(), properties.size()), true);
 }
 
-curl_slist *prepareTransfer(CURL *easy, const HttpRequest &request, HttpResponse &response) {
+void TransferResources::release() {
+	curl_slist_free_all(headers);
+	headers = nullptr;
+	if (mime) {
+		curl_mime_free(mime);
+		mime = nullptr;
+	}
+	if (file) {
+		fclose(file);
+		file = nullptr;
+	}
+}
+
+TransferResources prepareTransfer(CURL *easy, const HttpRequest &request, HttpResponse &response) {
+	TransferResources resources;
 	curl_easy_reset(easy);
 
 	curl_easy_setopt(easy, CURLOPT_URL, request.url.c_str());
@@ -246,24 +323,56 @@ curl_slist *prepareTransfer(CURL *easy, const HttpRequest &request, HttpResponse
 	curl_easy_setopt(easy, CURLOPT_SSL_CTX_FUNCTION, useSharedCaChain);
 
 	const std::string &method = request.method;
-	if (method == "POST") {
-		curl_easy_setopt(easy, CURLOPT_POST, 1L);
-	} else if (method != "GET") {
-		curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method.c_str());
-	}
-	if (method == "POST" || method == "PATCH" || (method != "GET" && !request.body.empty())) {
-		curl_easy_setopt(easy, CURLOPT_POSTFIELDS, request.body.c_str());
-		curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, (long)request.body.length());
+	if (!request.multipart.empty()) {
+		resources.mime = buildMime(easy, request.multipart);
+		curl_easy_setopt(easy, CURLOPT_MIMEPOST, resources.mime);
+		if (method != "POST") {
+			curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method.c_str());
+		}
+		// Large uploads over 3DS Wi-Fi outlast the usual timeout; give up only when the link stalls.
+		curl_easy_setopt(easy, CURLOPT_TIMEOUT, 0L);
+		curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 256L);
+		curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 30L);
+	} else {
+		if (method == "POST") {
+			curl_easy_setopt(easy, CURLOPT_POST, 1L);
+		} else if (method != "GET") {
+			curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method.c_str());
+		}
+		if (method == "POST" || method == "PATCH" || (method != "GET" && !request.body.empty())) {
+			curl_easy_setopt(easy, CURLOPT_POSTFIELDS, request.body.c_str());
+			curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, (long)request.body.length());
+		}
 	}
 
-	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, receiveBody);
-	curl_easy_setopt(easy, CURLOPT_WRITEDATA, &response.body);
-	curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, receiveHeader);
+	if (!request.downloadPath.empty()) {
+		resources.file = fopen(request.downloadPath.c_str(), "wb");
+		if (resources.file) {
+			// The SD card is far slower with tiny writes.
+			setvbuf(resources.file, nullptr, _IOFBF, 64 * 1024);
+		}
+		curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, writeBodyToFile);
+		curl_easy_setopt(easy, CURLOPT_WRITEDATA, resources.file);
+		curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, receiveHeaderNoReserve);
+		curl_easy_setopt(easy, CURLOPT_TIMEOUT, 0L);
+		curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 256L);
+		curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 30L);
+	} else {
+		curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, receiveBody);
+		curl_easy_setopt(easy, CURLOPT_WRITEDATA, &response.body);
+		curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, receiveHeader);
+	}
 	curl_easy_setopt(easy, CURLOPT_HEADERDATA, &response);
 
-	curl_slist *headers = buildHeaderList(request);
-	curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
-	return headers;
+	if (request.progress) {
+		curl_easy_setopt(easy, CURLOPT_NOPROGRESS, 0L);
+		curl_easy_setopt(easy, CURLOPT_XFERINFOFUNCTION, reportProgress);
+		curl_easy_setopt(easy, CURLOPT_XFERINFODATA, request.progress.get());
+	}
+
+	resources.headers = buildHeaderList(request);
+	curl_easy_setopt(easy, CURLOPT_HTTPHEADER, resources.headers);
+	return resources;
 }
 
 HttpResponse HttpClient::perform(const std::string &url, const std::string &method, const std::string &body,

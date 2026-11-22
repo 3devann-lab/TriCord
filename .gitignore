@@ -1,6 +1,7 @@
 *.elf
 *.3dsx
 *.cia
+!/TriCord.cia
 *.smdh
 *.lst
 build/
@@ -8,3 +9,6 @@ build/
 .cache
 .vscode/
 compile_commands.json
+
+# Built by scripts/build_ffmpeg.sh
+library/ffmpeg/
