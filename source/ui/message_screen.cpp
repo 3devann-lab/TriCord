@@ -20,6 +20,7 @@
 #include "ui/voice_popup.h"
 #include "ui/markdown_renderer.h"
 #include "ui/screen_manager.h"
+#include "ui/server_list_screen.h"
 #include "utils/file_utils.h"
 #include "utils/message_utils.h"
 #include "utils/redraw.h"
@@ -1049,6 +1050,13 @@ void MessageScreen::update() {
 		isManualScrolling = false;
 	}
 
+	// New 3DS: the C-stick scrolls without moving the selection.
+	if ((kHeld & (KEY_CSTICK_UP | KEY_CSTICK_DOWN)) && bottomMode != BottomScreenMode::EMOJI_PICKER) {
+		targetScrollY += (kHeld & KEY_CSTICK_DOWN) ? 7.0f : -7.0f;
+		targetScrollY = std::clamp(targetScrollY, 0.0f, std::max(0.0f, totalContentHeight - 240.0f));
+		isManualScrolling = true;
+	}
+
 	if (componentMode && componentCursorHeight > 0.0f) {
 		const float topLimit = 28.0f;
 		const float bottomLimit = 232.0f;
@@ -1223,6 +1231,16 @@ void MessageScreen::update() {
 		// L+R toggles the debug overlay, so R only counts on its own.
 		if ((kDown & KEY_R) && !(kHeld & KEY_L) && canAttach()) {
 			showAttachMenu();
+		}
+
+		// New 3DS: ZL/ZR step through the channel list, C-stick right jumps to the newest messages.
+		if (kDown & (KEY_ZL | KEY_ZR)) {
+			updateLock.unlock();
+			switchChannel((kDown & KEY_ZR) ? 1 : -1);
+			return;
+		}
+		if (kDown & KEY_CSTICK_RIGHT) {
+			jumpToPresent();
 		}
 	}
 
@@ -5150,6 +5168,62 @@ void MessageScreen::jumpToMessage(const std::string &messageId) {
 		    centerOnSelection();
 	    },
 	    messageId);
+}
+
+void MessageScreen::switchChannel(int direction) {
+	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
+	std::string guildId = client.getGuildIdFromChannel(channelId);
+	bool isPrivate = guildId.empty() || guildId == "DM";
+
+	std::vector<Discord::Channel> ordered;
+	if (isPrivate) {
+		ordered = client.getPrivateChannels();
+		std::sort(ordered.begin(), ordered.end(), [](const Discord::Channel &a, const Discord::Channel &b) {
+			return MessageUtils::isNewerSnowflake(a.last_message_id, b.last_message_id);
+		});
+	} else {
+		const Discord::Guild *guild = client.getGuildPtr(guildId);
+		if (guild == nullptr) {
+			return;
+		}
+		ordered = ServerListScreen::orderChannels(*guild);
+	}
+
+	// Threads step from their parent channel.
+	std::string anchorId = channelId;
+	if (const Discord::Channel *current = client.getChannelPtr(channelId)) {
+		if ((current->type == 10 || current->type == 11 || current->type == 12) && !current->parent_id.empty()) {
+			anchorId = current->parent_id;
+		}
+	}
+
+	auto opensHere = [](const Discord::Channel &c) {
+		return c.type == 0 || c.type == 5 || c.type == 1 || c.type == 3;
+	};
+	int current = -1;
+	for (int i = 0; i < (int)ordered.size(); i++) {
+		if (ordered[i].id == anchorId) {
+			current = i;
+			break;
+		}
+	}
+	int target = -1;
+	for (int i = current + direction; current >= 0 && i >= 0 && i < (int)ordered.size(); i += direction) {
+		if (opensHere(ordered[i])) {
+			target = i;
+			break;
+		}
+	}
+	if (target < 0) {
+		ScreenManager::getInstance().showToast(TR(direction > 0 ? "message.last_channel" : "message.first_channel"));
+		return;
+	}
+
+	if (!isPrivate) {
+		ScreenManager::getInstance().setLastChannelIndex(guildId, target);
+	}
+	client.setSelectedChannelId(ordered[target].id);
+	ScreenManager::getInstance().setScreen(ScreenType::MESSAGES);
 }
 
 void MessageScreen::jumpToPresent() {

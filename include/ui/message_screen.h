@@ -228,6 +228,8 @@ class MessageScreen : public Screen {
 	bool viewingHistory = false;
 	void jumpToMessage(const std::string &messageId);
 	void jumpToPresent();
+	// ZL/ZR: the previous or next text channel in the same server (or DM list).
+	void switchChannel(int direction);
 	void centerOnSelection();
 	void renderUploadProgress();
 	void renderAttachButton(float x, float y);

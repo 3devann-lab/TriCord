@@ -481,5 +481,7 @@
     "settings.idle_on_lid_close": "Stay Connected When Closed",
     "settings.desc.idle_on_lid_close": "Closing the lid turns the screens off and sets you to Idle instead of sleeping, so DMs still arrive. Opening it sets you back to Online. Uses more battery than sleep mode.",
     "settings.status_bar": "Battery & Wi-Fi Icons",
-    "settings.desc.status_bar": "Show battery level and Wi-Fi strength in the top-right corner of the bottom screen."
+    "settings.desc.status_bar": "Show battery level and Wi-Fi strength in the top-right corner of the bottom screen.",
+    "message.last_channel": "That's the last channel",
+    "message.first_channel": "That's the first channel"
 }

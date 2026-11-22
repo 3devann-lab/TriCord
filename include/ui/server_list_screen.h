@@ -26,6 +26,10 @@ class ServerListScreen : public Screen {
 
 	void resetToServerView();
 
+	// A guild's channels as the channel list shows them: loose channels first, then each
+	// category followed by its channels. Categories are included.
+	static std::vector<Discord::Channel> orderChannels(const Discord::Guild &guild);
+
   private:
 	int selectedIndex;
 	int scrollOffset;
@@ -51,6 +55,9 @@ class ServerListScreen : public Screen {
 	};
 
 	std::vector<ListItem> listItems;
+	int cstickTimer = 0;
+	// ZL/ZR in the channel list: the neighbouring server's channels.
+	void switchServer(int direction);
 
 	void rebuildList();
 	const Discord::Guild *getGuild(const std::string &id);
