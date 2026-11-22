@@ -360,6 +360,11 @@ void VideoPlayer::update(u32 kDown, u32 kHeld) {
 }
 
 bool VideoPlayer::isAnimating() const {
+	// Sound only: about 12 frames a second is plenty for the waveform and clock.
+	if (stage == Stage::PLAYING && started && !haveFrame && decoder.state() != Media::PlayerState::OPENING &&
+	    !decoder.info().hasVideo) {
+		return redraw || osdTimer > 0 || osGetTime() - lastAudioRedraw > 80;
+	}
 	if (stage != Stage::PLAYING || redraw || osdTimer > 0 || !haveFrame) {
 		return true;
 	}
@@ -379,6 +384,9 @@ void VideoPlayer::renderTop() {
 		                            1.0f - (float)frameH / TEX_H};
 		C2D_Image img = {tex, &subtex};
 		C2D_DrawImageAt(img, (400.0f - w) / 2.0f, (240.0f - h) / 2.0f, 0.5f, nullptr, scale, scale);
+	} else if (stage == Stage::PLAYING && started && decoder.state() != Media::PlayerState::OPENING &&
+	           !decoder.info().hasVideo) {
+		renderAudio(decoder.info());
 	} else if (stage == Stage::PLAYING) {
 		drawCenteredText(110.0f, 0.5f, 0.5f, 0.5f, C2D_Color32(200, 200, 200, 255), TR("common.loading"), 400.0f);
 	} else if (stage == Stage::DOWNLOADING) {
@@ -405,6 +413,59 @@ void VideoPlayer::renderTop() {
 		const float w = measureText(osdText, 0.45f, 0.45f) + 20.0f;
 		drawRoundedRect((400.0f - w) / 2.0f, 10.0f, 0.8f, w, 22.0f, 11.0f, C2D_Color32(0, 0, 0, 170));
 		drawCenteredText(14.0f, 0.85f, 0.45f, 0.45f, C2D_Color32(255, 255, 255, 255), osdText, 400.0f);
+	}
+}
+
+void VideoPlayer::renderAudio(const Media::VideoInfo &info) {
+	lastAudioRedraw = osGetTime();
+	C2D_DrawRectSolid(0, 0, 0.2f, 400, 240, ScreenManager::colorBackgroundDark());
+
+	const std::string title = source.title.empty() ? Utils::File::baseName(path) : source.title;
+	drawCenteredText(30.0f, 0.5f, 0.55f, 0.55f, ScreenManager::colorText(), getTruncatedText(title, 360.0f, 0.55f, 0.55f),
+	                 400.0f);
+	if (!info.audioCodec.empty()) {
+		drawCenteredText(50.0f, 0.5f, 0.38f, 0.38f, ScreenManager::colorTextMuted(), info.audioCodec, 400.0f);
+	}
+
+	const double position = decoder.position();
+	const float played = info.duration > 0 ? std::clamp((float)(position / info.duration), 0.0f, 1.0f) : 0.0f;
+	const bool paused = decoder.paused() || decoder.state() == Media::PlayerState::ENDED;
+	const int BARS = 48;
+	const float barW = 5.0f, gap = 2.5f;
+	const float totalW = BARS * barW + (BARS - 1) * gap;
+	const float x0 = (400.0f - totalW) / 2.0f;
+	const float midY = 125.0f;
+	const u32 playedColor = ScreenManager::colorAccent();
+	const u32 restColor = (ScreenManager::colorTextMuted() & 0x00FFFFFF) | 0x70000000;
+	const float t = (float)(osGetTime() % 100000) / 1000.0f;
+
+	for (int i = 0; i < BARS; i++) {
+		float level;
+		if (!source.waveform.empty()) {
+			// Discord's samples, stretched or squeezed to the bar count (loudest sample per bar).
+			size_t from = i * source.waveform.size() / BARS;
+			size_t to = std::max(from + 1, (size_t)((i + 1) * source.waveform.size() / BARS));
+			int peak = 0;
+			for (size_t k = from; k < to && k < source.waveform.size(); k++) {
+				peak = std::max(peak, (int)source.waveform[k]);
+			}
+			level = 0.12f + 0.88f * peak / 255.0f;
+		} else {
+			// Music has no samples to show; a gentle moving pattern stands in, still while paused.
+			float phase = paused ? 0.0f : t;
+			level = 0.25f + 0.35f * (0.5f + 0.5f * sinf(i * 0.55f + phase * 3.1f)) *
+			                    (0.6f + 0.4f * sinf(i * 0.21f - phase * 1.7f));
+		}
+		float h = std::max(4.0f, level * 70.0f);
+		float x = x0 + i * (barW + gap);
+		bool isPlayed = (i + 0.5f) / BARS <= played;
+		drawRoundedRect(x, midY - h / 2.0f, 0.5f, barW, h, barW / 2.0f, isPlayed ? playedColor : restColor);
+	}
+
+	std::string clock = formatDuration(position) + " / " + (info.duration > 0 ? formatDuration(info.duration) : "--:--");
+	drawCenteredText(178.0f, 0.5f, 0.5f, 0.5f, ScreenManager::colorText(), clock, 400.0f);
+	if (paused) {
+		drawCenteredText(200.0f, 0.5f, 0.4f, 0.4f, ScreenManager::colorTextMuted(), TR("video.paused"), 400.0f);
 	}
 }
 

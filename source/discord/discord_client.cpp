@@ -2937,6 +2937,10 @@ Attachment DiscordClient::parseAttachmentObject(const rapidjson::Value &aObj) {
 	attachment.width = Utils::Json::getInt(aObj, "width");
 	attachment.height = Utils::Json::getInt(aObj, "height");
 	attachment.content_type = Utils::Json::getString(aObj, "content_type");
+	attachment.waveform = Utils::Json::getString(aObj, "waveform");
+	if (aObj.HasMember("duration_secs") && aObj["duration_secs"].IsNumber()) {
+		attachment.durationSecs = aObj["duration_secs"].GetDouble();
+	}
 	// The prefix is how clients mark a spoiler on upload; the docs only describe the flag.
 	attachment.spoiler =
 	    (Utils::Json::getInt(aObj, "flags") & ATTACHMENT_FLAG_SPOILER) || attachment.filename.rfind("SPOILER_", 0) == 0;
@@ -4437,7 +4441,7 @@ void DiscordClient::uploadFile(const UploadRequest &request, std::shared_ptr<Net
 	writer.Key("tts");
 	writer.Bool(false);
 	writer.Key("flags");
-	writer.Int(0);
+	writer.Int(request.voiceMessage ? (1 << 13) : 0);
 	if (!request.replyId.empty()) {
 		writer.Key("message_reference");
 		writer.StartObject();
@@ -4452,6 +4456,12 @@ void DiscordClient::uploadFile(const UploadRequest &request, std::shared_ptr<Net
 	writer.String("0");
 	writer.Key("filename");
 	writer.String(filename.c_str());
+	if (request.voiceMessage) {
+		writer.Key("duration_secs");
+		writer.Double(request.durationSecs);
+		writer.Key("waveform");
+		writer.String(request.waveform.c_str());
+	}
 	writer.EndObject();
 	writer.EndArray();
 	writer.EndObject();

@@ -238,6 +238,8 @@ class MessageScreen : public Screen {
 	void switchChannel(int direction);
 	void showChannelMenu();
 	void openDmWith(const std::string &userId);
+	void openVoiceRecorder();
+	void openDoodlePad();
 	void openMessageList(MessageListOverlay::Mode mode);
 	// A search result in another channel opens that channel and jumps once it has loaded.
 	std::string pendingJumpId;

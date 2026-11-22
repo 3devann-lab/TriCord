@@ -84,6 +84,10 @@ struct UploadRequest {
 	std::string replyId;
 	std::string nonce;
 	bool spoiler = false;
+	// Sent as a voice message (an Ogg Opus file with its length and waveform).
+	bool voiceMessage = false;
+	double durationSecs = 0.0;
+	std::string waveform;
 };
 using MfaSmsCallback = std::function<void(bool success, const std::string &phoneOrError)>;
 using ErrorCallback = std::function<void(const std::string &error)>;

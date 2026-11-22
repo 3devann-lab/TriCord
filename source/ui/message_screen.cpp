@@ -22,8 +22,11 @@
 #include "ui/message_list_overlay.h"
 #include "ui/invite_overlay.h"
 #include "ui/member_list_overlay.h"
+#include "ui/doodle_pad.h"
+#include "ui/voice_recorder.h"
 #include "ui/screen_manager.h"
 #include "ui/server_list_screen.h"
+#include "utils/base64_utils.h"
 #include "utils/file_utils.h"
 #include "utils/message_utils.h"
 #include "utils/redraw.h"
@@ -87,6 +90,27 @@ bool isVideoAttachment(const Discord::Attachment &attach) {
 		return false;
 	}
 	return attach.content_type.rfind("video/", 0) == 0 || Utils::File::isVideoPath(attach.filename);
+}
+
+bool isAudioAttachment(const Discord::Attachment &attach) {
+	if (!hasRemoteFile(attach)) {
+		return false;
+	}
+	if (attach.content_type.rfind("audio/", 0) == 0 || !attach.waveform.empty()) {
+		return true;
+	}
+	static const char *exts[] = {"mp3", "ogg", "oga", "opus", "m4a", "wav", "flac", "aac"};
+	const std::string ext = Utils::File::extension(attach.filename);
+	for (const char *e : exts) {
+		if (ext == e) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool isVoiceMessage(const Discord::Attachment &attach) {
+	return !attach.waveform.empty() || attach.filename == "voice-message.ogg";
 }
 
 // Images, and videos, which show the still the media proxy renders for them.
@@ -922,6 +946,10 @@ void MessageScreen::update() {
 						}));
 					}
 				}
+			} else if (action == "AttachVoice") {
+				openVoiceRecorder();
+			} else if (action == "AttachDoodle") {
+				openDoodlePad();
 			} else if (action == "AttachFile") {
 				openFileBrowser();
 			} else if (action == "AttachGif") {
@@ -1880,6 +1908,15 @@ float MessageScreen::drawAttachment(const Discord::Attachment &attach, float x, 
 
 	if (!isVisualAttachment(attach)) {
 		const std::string name = hidden ? TR("message.spoiler") : attach.filename;
+		if (isAudioAttachment(attach) && !hidden) {
+			std::string label = isVoiceMessage(attach) ? TR("message.voice_message") : name;
+			if (attach.durationSecs > 0.0) {
+				label += "  " + formatDuration(attach.durationSecs);
+			}
+			drawText(x, y, 0.5f, 0.35f, 0.35f, ScreenManager::colorAccent(),
+			         "\u25B6 " + label + "  (" + TR("message.audio_play_hint") + ")");
+			return y + 12.0f;
+		}
 		drawText(x, y, 0.5f, 0.35f, 0.35f, ScreenManager::colorTextMuted(),
 		         Core::I18n::format(TR("message.file"), name));
 		return y + 12.0f;
@@ -3779,7 +3816,7 @@ void MessageScreen::showMessageOptions() {
 	bool playable = false;
 	bool saveable = false;
 	for (const auto &attach : msg.attachments) {
-		playable = playable || isVideoAttachment(attach);
+		playable = playable || isVideoAttachment(attach) || isAudioAttachment(attach);
 		saveable = saveable || hasRemoteFile(attach);
 	}
 	for (const auto &embed : msg.embeds) {
@@ -5039,10 +5076,40 @@ void MessageScreen::showAttachMenu() {
 	addOption("AttachFile", "attach.file");
 	addOption("AttachGif", "attach.gif");
 	addOption("AttachCamera", "attach.camera");
+	addOption("AttachVoice", "attach.voice");
+	addOption("AttachDoodle", "attach.doodle");
 	addOption("AttachCommand", "attach.command");
 	addOption("Cancel", "message.menu.cancel");
 	isMenuOpen = true;
 	menuIndex = 0;
+}
+
+void MessageScreen::openVoiceRecorder() {
+	pushOverlay(std::make_unique<VoiceRecorder>(
+	    [this](const UploadChoice &choice) { startUpload(choice); },
+	    [this](const std::string &path, const std::vector<uint8_t> &waveform) {
+		    VideoPlayer::Source source;
+		    source.localPath = path;
+		    source.title = TR("voice_msg.preview");
+		    source.audio = true;
+		    source.waveform = waveform;
+		    pushOverlay(std::make_unique<VideoPlayer>(source));
+	    }));
+}
+
+void MessageScreen::openDoodlePad() {
+	pushOverlay(std::make_unique<DoodlePad>([this](const std::string &path, DoodlePad *pad) {
+		const long long limit = Discord::DiscordClient::getInstance().getUploadLimitBytes();
+		// Backing out of the send screen returns to the drawing, which stays open underneath.
+		pushOverlay(std::make_unique<UploadConfirm>(
+		    path, limit, pendingCaption,
+		    [this, pad](const UploadChoice &choice) {
+			    pad->close();
+			    pendingCaption.clear();
+			    startUpload(choice);
+		    },
+		    nullptr));
+	}));
 }
 
 void MessageScreen::openFileBrowser() {
@@ -5111,6 +5178,8 @@ void MessageScreen::startUpload(const UploadChoice &choice) {
 	attach.size = (int)std::max(0LL, Utils::File::fileSize(choice.path));
 	attach.content_type = Utils::File::mimeType(choice.path);
 	attach.spoiler = choice.spoiler;
+	attach.durationSecs = choice.durationSecs;
+	attach.waveform = choice.waveform;
 	pending.attachments.push_back(attach);
 
 	auto progress = std::make_shared<Network::TransferProgress>();
@@ -5128,6 +5197,9 @@ void MessageScreen::startUpload(const UploadChoice &choice) {
 	request.caption = choice.caption;
 	request.spoiler = choice.spoiler;
 	request.nonce = pending.nonce;
+	request.voiceMessage = choice.voiceMessage;
+	request.durationSecs = choice.durationSecs;
+	request.waveform = choice.waveform;
 	Discord::DiscordClient::getInstance().uploadFile(
 	    request, progress,
 	    [this, token = aliveToken, pendingId = pending.id](const Discord::Message &sentMsg, bool success,
@@ -5172,6 +5244,20 @@ bool MessageScreen::playSelectedVideo(bool includeGifs) {
 	for (const auto &attach : msg.attachments) {
 		if (isVideoAttachment(attach)) {
 			playVideo(attach.url.empty() ? attach.proxy_url : attach.url, "", attach.filename, attach.filename, false);
+			return true;
+		}
+		if (isAudioAttachment(attach) && !(attach.spoiler && !revealedSpoilers.count(msg.id))) {
+			VideoPlayer::Source source;
+			source.url = attach.url.empty() ? attach.proxy_url : attach.url;
+			source.fileName = attach.filename;
+			source.audio = true;
+			std::string author = msg.author.global_name.empty() ? msg.author.username : msg.author.global_name;
+			source.title = isVoiceMessage(attach) ? Core::I18n::format(TR("message.voice_from"), author) : attach.filename;
+			if (!attach.waveform.empty()) {
+				std::vector<unsigned char> samples = Utils::Base64::decode(attach.waveform);
+				source.waveform.assign(samples.begin(), samples.end());
+			}
+			pushOverlay(std::make_unique<VideoPlayer>(source));
 			return true;
 		}
 	}

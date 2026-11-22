@@ -259,6 +259,9 @@ struct Attachment {
 	int height = 0;
 	std::string content_type;
 	bool spoiler = false;
+	// Voice messages: length and Discord's base64 amplitude samples.
+	double durationSecs = 0.0;
+	std::string waveform;
 };
 
 // One entry of the user's favorite GIFs, from the frecency settings proto.

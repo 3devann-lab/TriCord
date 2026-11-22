@@ -182,6 +182,21 @@ std::string mimeType(const std::string &path) {
 	if (ext == "mov") {
 		return "video/quicktime";
 	}
+	if (ext == "ogg" || ext == "oga" || ext == "opus") {
+		return "audio/ogg";
+	}
+	if (ext == "mp3") {
+		return "audio/mpeg";
+	}
+	if (ext == "m4a" || ext == "aac") {
+		return "audio/mp4";
+	}
+	if (ext == "wav") {
+		return "audio/wav";
+	}
+	if (ext == "flac") {
+		return "audio/flac";
+	}
 	if (ext == "webm") {
 		return "video/webm";
 	}

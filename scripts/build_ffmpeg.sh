@@ -50,8 +50,9 @@ ARCH_FLAGS="-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft"
 # FFmpeg's VFP code runs the ARM11's VFP in vector mode, which the 3DS kernel's
 # VFP context handling is not built for; the compiler's scalar VFP code is safe.
 #
-# Only what Discord videos need: MP4/MOV and WebM containers, H.264/VP8 video,
-# and the audio codecs those carry. HEVC and VP9 are far beyond the 3DS CPU.
+# Only what Discord videos and audio need: MP4/MOV and WebM containers, H.264/VP8
+# video and the audio codecs those carry, plus Ogg (voice messages), MP3, WAV, FLAC
+# and raw AAC files. HEVC and VP9 are far beyond the 3DS CPU.
 ./configure \
 	--prefix="${PREFIX}" \
 	--enable-cross-compile \
@@ -82,9 +83,9 @@ ARCH_FLAGS="-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft"
 	--enable-swscale \
 	--enable-swresample \
 	--enable-protocol=file \
-	--enable-demuxer=mov,matroska \
-	--enable-decoder=h264,vp8,aac,mp3,opus,vorbis \
-	--enable-parser=h264,aac,vp8,opus,vorbis,mpegaudio \
+	--enable-demuxer=mov,matroska,ogg,mp3,wav,flac,aac \
+	--enable-decoder=h264,vp8,aac,mp3,opus,vorbis,flac,pcm_s16le,pcm_u8,pcm_f32le \
+	--enable-parser=h264,aac,vp8,opus,vorbis,mpegaudio,flac \
 	--enable-bsf=h264_mp4toannexb
 
 make -j"${JOBS}"

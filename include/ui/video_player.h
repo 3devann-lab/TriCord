@@ -8,6 +8,7 @@
 #include <citro2d.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Network {
 struct TransferProgress;
@@ -28,6 +29,10 @@ class VideoPlayer : public Overlay {
 		std::string fileName;
 		// GIF-like clips play on repeat.
 		bool loop = false;
+		// Music and voice messages: no picture, so the top screen shows the sound instead.
+		bool audio = false;
+		// Voice messages carry Discord's amplitude samples (0-255).
+		std::vector<uint8_t> waveform;
 	};
 
 	explicit VideoPlayer(const Source &source);
@@ -70,6 +75,8 @@ class VideoPlayer : public Overlay {
 	bool redraw = true;
 	bool hdHintShown = false;
 	u64 lastClockRedraw = 0;
+	u64 lastAudioRedraw = 0;
+	void renderAudio(const Media::VideoInfo &info);
 
 	Utils::WorkerThread saveThread;
 	std::shared_ptr<std::atomic<int>> saveState;
