@@ -141,6 +141,19 @@ class ScreenManager {
 			expandedFolders.erase(id);
 		}
 	}
+	// Opening a channel to show one message: the next MessageScreen for channelId jumps to it.
+	void setPendingJump(const std::string &channelId, const std::string &messageId) {
+		pendingJumpChannel = channelId;
+		pendingJumpMessage = messageId;
+	}
+	std::string takePendingJump(const std::string &channelId) {
+		if (channelId != pendingJumpChannel) {
+			return "";
+		}
+		pendingJumpChannel.clear();
+		return std::move(pendingJumpMessage);
+	}
+
 	bool isFolderExpanded(const std::string &id) { return expandedFolders.find(id) != expandedFolders.end(); }
 
   private:
@@ -178,6 +191,8 @@ class ScreenManager {
 	std::map<std::string, int> lastForumScroll;
 
 	std::set<std::string> expandedFolders;
+	std::string pendingJumpChannel;
+	std::string pendingJumpMessage;
 
 	void drawHamburgerButton();
 	void drawToast();

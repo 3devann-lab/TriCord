@@ -3624,6 +3624,108 @@ void DiscordClient::loadCachedMessagesAsync(const std::string &channelId, Messag
 	});
 }
 
+void DiscordClient::fetchPinnedMessages(const std::string &channelId, MessageListCallback cb) {
+	if (channelId.empty() || token.empty()) {
+		cb(false, 0, {}, "");
+		return;
+	}
+	// The newer endpoint wraps each message as {pinned_at, message}; the older one is a bare array.
+	auto parse = [this](const std::string &body, std::vector<Message> &out) {
+		rapidjson::Document doc;
+		doc.Parse(body.c_str());
+		if (doc.HasParseError()) {
+			return false;
+		}
+		if (doc.IsArray()) {
+			for (rapidjson::SizeType i = 0; i < doc.Size(); i++) {
+				if (doc[i].IsObject()) {
+					out.push_back(parseSingleMessage(doc[i]));
+				}
+			}
+			return true;
+		}
+		if (doc.IsObject() && doc.HasMember("items") && doc["items"].IsArray()) {
+			for (const auto &item : doc["items"].GetArray()) {
+				if (item.IsObject() && item.HasMember("message") && item["message"].IsObject()) {
+					out.push_back(parseSingleMessage(item["message"]));
+				}
+			}
+			return true;
+		}
+		return false;
+	};
+
+	std::string auth = token;
+	std::string base = "https://discord.com/api/v10/channels/" + channelId;
+	Network::NetworkManager::getInstance().enqueue(
+	    base + "/messages/pins?limit=50", "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [base, auth, cb, parse](Network::HttpResponse &resp) {
+		    std::vector<Message> pins;
+		    if (resp.statusCode == 200 && parse(resp.body, pins)) {
+			    cb(true, (int)pins.size(), pins, "");
+			    return;
+		    }
+		    Network::NetworkManager::getInstance().enqueue(
+		        base + "/pins", "GET", "", Network::RequestPriority::INTERACTIVE,
+		        [cb, parse](Network::HttpResponse &old) {
+			        std::vector<Message> pins;
+			        if (old.statusCode == 200 && parse(old.body, pins)) {
+				        cb(true, (int)pins.size(), pins, "");
+			        } else {
+				        cb(false, 0, {}, old.statusCode == 403 ? "forbidden" : "");
+			        }
+		        },
+		        {{"Authorization", auth}});
+	    },
+	    {{"Authorization", auth}});
+}
+
+void DiscordClient::searchMessages(const std::string &guildId, const std::string &channelId, const std::string &query,
+                                   int offset, MessageListCallback cb) {
+	if (token.empty() || query.empty()) {
+		cb(false, 0, {}, "");
+		return;
+	}
+	bool inGuild = !guildId.empty() && guildId != "DM";
+	std::string url = inGuild ? "https://discord.com/api/v10/guilds/" + guildId + "/messages/search?"
+	                          : "https://discord.com/api/v10/channels/" + channelId + "/messages/search?";
+	url += "content=" + urlEncode(query);
+	if (inGuild && !channelId.empty()) {
+		url += "&channel_id=" + channelId;
+	}
+	if (offset > 0) {
+		url += "&offset=" + std::to_string(offset);
+	}
+
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [this, cb](Network::HttpResponse &resp) {
+		    // 202: Discord is still indexing this server; the caller asks again shortly.
+		    if (resp.statusCode != 200) {
+			    cb(false, 0, {}, resp.statusCode == 403 ? "forbidden" : (resp.statusCode == 202 ? "indexing" : ""));
+			    return;
+		    }
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (doc.HasParseError() || !doc.IsObject() || !doc.HasMember("messages") || !doc["messages"].IsArray()) {
+			    cb(false, 0, {}, "");
+			    return;
+		    }
+		    int total = doc.HasMember("total_results") && doc["total_results"].IsInt() ? doc["total_results"].GetInt() : 0;
+		    std::vector<Message> found;
+		    for (const auto &group : doc["messages"].GetArray()) {
+			    // Each hit is an array holding the matching message.
+			    if (group.IsArray() && group.Size() > 0 && group[0].IsObject()) {
+				    found.push_back(parseSingleMessage(group[0]));
+			    } else if (group.IsObject()) {
+				    found.push_back(parseSingleMessage(group));
+			    }
+		    }
+		    cb(true, total, found, "");
+	    },
+	    {{"Authorization", token}});
+}
+
 std::vector<Message> DiscordClient::parseMessages(const std::string &json) {
 	std::vector<Message> messages;
 	rapidjson::Document doc;

@@ -19,6 +19,7 @@
 #include "ui/voice_controls.h"
 #include "ui/voice_popup.h"
 #include "ui/markdown_renderer.h"
+#include "ui/message_list_overlay.h"
 #include "ui/screen_manager.h"
 #include "ui/server_list_screen.h"
 #include "utils/file_utils.h"
@@ -417,6 +418,7 @@ MessageScreen::~MessageScreen() {
 void MessageScreen::onEnter() {
 	isLoading = true;
 	newMessageCount = 0;
+	pendingJumpId = ScreenManager::getInstance().takePendingJump(channelId);
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	std::lock_guard<std::recursive_mutex> lock(client.getMutex());
@@ -660,6 +662,12 @@ void MessageScreen::update() {
 	}
 	flushMemberFetches();
 
+	if (!pendingJumpId.empty() && freshHistoryLoaded && !isLoading) {
+		std::string target = pendingJumpId;
+		pendingJumpId.clear();
+		jumpToMessage(target);
+	}
+
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	std::lock_guard<std::recursive_mutex> clientLock(client.getMutex());
 	std::unique_lock<std::recursive_mutex> updateLock(messageMutex);
@@ -888,7 +896,13 @@ void MessageScreen::update() {
 			std::string action = menuActions[menuIndex];
 			isMenuOpen = false;
 
-			if (action == "AttachFile") {
+			if (action == "ChannelSearch") {
+				openMessageList(MessageListOverlay::Mode::SEARCH);
+			} else if (action == "ChannelPins") {
+				openMessageList(MessageListOverlay::Mode::PINS);
+			} else if (action == "ChannelLatest") {
+				jumpToPresent();
+			} else if (action == "AttachFile") {
 				openFileBrowser();
 			} else if (action == "AttachGif") {
 				openGifPicker();
@@ -1267,6 +1281,11 @@ void MessageScreen::update() {
 		}
 
 		// New 3DS: ZL/ZR step through the channel list, C-stick right jumps to the newest messages.
+		// L on its own: the channel menu (search, pins, members, invite).
+		if ((kDown & KEY_L) && !(kHeld & KEY_R) && !isHiddenChannel) {
+			showChannelMenu();
+		}
+
 		if (kDown & (KEY_ZL | KEY_ZR)) {
 			updateLock.unlock();
 			switchChannel((kDown & KEY_ZR) ? 1 : -1);
@@ -3483,8 +3502,11 @@ void MessageScreen::renderBottom(C3D_RenderTarget *target) {
 				hints += "R: " + TR("message.attach_short") + "  ";
 			}
 			hints += "\uE001: " + TR("common.back");
+			if (!isHiddenChannel) {
+				hints += "  L: " + TR("channel_menu.short");
+			}
 		}
-		cachedHints = hints;
+		cachedHints = getTruncatedText(hints, 304.0f, 0.4f, 0.4f);
 	}
 
 	drawText(10.0f, BOTTOM_SCREEN_HEIGHT - 25.0f, 0.5f, 0.4f, 0.4f, ScreenManager::colorTextMuted(), cachedHints);
@@ -4932,6 +4954,35 @@ void MessageScreen::renderUploadProgress() {
 	drawText(304.0f - measureText(percent, 0.4f, 0.4f), y + 4.0f, 0.55f, 0.4f, 0.4f,
 	         ScreenManager::colorTextMuted(), percent);
 	drawProgressBar(16.0f, y + 24.0f, 288.0f, 6.0f, fraction, 0.55f);
+}
+
+void MessageScreen::showChannelMenu() {
+	menuOptions.clear();
+	menuActions.clear();
+	auto addOption = [&](const std::string &actionId, const std::string &key) {
+		menuActions.push_back(actionId);
+		menuOptions.push_back(TR(key));
+	};
+	addOption("ChannelSearch", "channel_menu.search");
+	addOption("ChannelPins", "channel_menu.pins");
+	addOption("ChannelLatest", "channel_menu.latest");
+	addOption("Cancel", "message.menu.cancel");
+	isMenuOpen = true;
+	menuIndex = 0;
+}
+
+void MessageScreen::openMessageList(MessageListOverlay::Mode mode) {
+	std::string name = channelName.empty() ? TR("message.thread") : channelName;
+	pushOverlay(std::make_unique<MessageListOverlay>(
+	    mode, channelId, guildId, name, [this](const Discord::Message &msg) {
+		    if (msg.channelId.empty() || msg.channelId == channelId) {
+			    jumpToMessage(msg.id);
+			    return;
+		    }
+		    ScreenManager::getInstance().setPendingJump(msg.channelId, msg.id);
+		    Discord::DiscordClient::getInstance().setSelectedChannelId(msg.channelId);
+		    ScreenManager::getInstance().setScreen(ScreenType::MESSAGES);
+	    }));
 }
 
 void MessageScreen::showAttachMenu() {

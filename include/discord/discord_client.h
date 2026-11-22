@@ -39,6 +39,9 @@ enum class ConnectionState {
 };
 
 using MessagesCallback = std::function<void(const std::vector<Message> &)>;
+// ok, total results (for paging), this page, and an error hint ("forbidden", "indexing" or empty).
+using MessageListCallback =
+    std::function<void(bool ok, int total, const std::vector<Message> &messages, const std::string &error)>;
 using SingleMessageCallback = std::function<void(const std::optional<Message> &)>;
 using SuccessCallback = std::function<void(bool success)>;
 using ThreadsCallback = std::function<void(const std::vector<Channel> &)>;
@@ -214,6 +217,10 @@ class DiscordClient {
 	                        const std::string &around = "");
 	// The last 50 messages fetched for this channel, from the SD card. Never calls back when
 	// there is nothing cached.
+	void fetchPinnedMessages(const std::string &channelId, MessageListCallback cb);
+	// Server-wide when channelId is empty; 25 results per page, from offset.
+	void searchMessages(const std::string &guildId, const std::string &channelId, const std::string &query, int offset,
+	                    MessageListCallback cb);
 	void loadCachedMessagesAsync(const std::string &channelId, MessagesCallback cb);
 	void fetchMessagesBeforeAsync(const std::string &channelId, const std::string &beforeId, int limit,
 	                              MessagesCallback cb);

@@ -1,6 +1,7 @@
 #ifndef MESSAGE_SCREEN_H
 #define MESSAGE_SCREEN_H
 
+#include "ui/message_list_overlay.h"
 #include "discord/types.h"
 #include "ui/screen_manager.h"
 #include "ui/emoji_picker.h"
@@ -235,6 +236,10 @@ class MessageScreen : public Screen {
 	void jumpToPresent();
 	// ZL/ZR: the previous or next text channel in the same server (or DM list).
 	void switchChannel(int direction);
+	void showChannelMenu();
+	void openMessageList(MessageListOverlay::Mode mode);
+	// A search result in another channel opens that channel and jumps once it has loaded.
+	std::string pendingJumpId;
 	void centerOnSelection();
 	void renderUploadProgress();
 	void renderAttachButton(float x, float y);
