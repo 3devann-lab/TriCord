@@ -6,6 +6,7 @@
 #include "discord/voice_client.h"
 #include "log.h"
 #include "ui/image_manager.h"
+#include "ui/loading_view.h"
 #include "ui/voice_controls.h"
 #include "ui/voice_popup.h"
 #include "utils/message_utils.h"
@@ -1425,27 +1426,7 @@ void ServerListScreen::renderTop(C3D_RenderTarget *target) {
 			return;
 		}
 
-		float centerX = 200.0f;
-		float centerY = 120.0f;
-
-		C3D_Tex *discordTex = UI::ImageManager::getInstance().getLocalImage("romfs:/discord.png", true);
-		if (discordTex) {
-			UI::ImageManager::ImageInfo info = UI::ImageManager::getInstance().getImageInfo("romfs:/discord.png");
-			Tex3DS_SubTexture subtex;
-			subtex.width = (u16)info.originalW;
-			subtex.height = (u16)info.originalH;
-			subtex.left = 0.0f;
-			subtex.top = 0.0f;
-			subtex.right = (float)info.originalW / discordTex->width;
-			subtex.bottom = (float)info.originalH / discordTex->height;
-			C2D_Image img = {discordTex, &subtex};
-			float scale = 90.0f / (float)info.originalW;
-			float rad = (loadingAngle - 90.0f) * M_PI / 180.0f;
-			C2D_DrawImageAtRotated(img, centerX, centerY, 0.6f, rad, nullptr, scale, scale);
-		}
-
-		drawCenteredText(centerY + 60.0f, 0.5f, 0.5f, 0.5f, ScreenManager::colorTextMuted(),
-		                 Core::I18n::getInstance().get("common.loading"), 400.0f);
+		LoadingView::drawTop();
 		return;
 	}
 
@@ -2174,6 +2155,11 @@ void ServerListScreen::drawVoicePanel() {
 void ServerListScreen::renderBottom(C3D_RenderTarget *target) {
 	C2D_SceneBegin(target);
 	C2D_TargetClear(target, ScreenManager::colorBackgroundDark());
+
+	if (listItems.empty() && Discord::DiscordClient::getInstance().getState() != Discord::ConnectionState::READY) {
+		LoadingView::drawBottom();
+		return;
+	}
 
 	if (VoiceControls::visible()) {
 		drawVoicePanel();

@@ -226,6 +226,58 @@ struct FavoriteGif {
 	int order = 0;
 };
 
+namespace CommandOptionType {
+constexpr int SUB_COMMAND = 1;
+constexpr int SUB_COMMAND_GROUP = 2;
+constexpr int STRING = 3;
+constexpr int INTEGER = 4;
+constexpr int BOOLEAN = 5;
+constexpr int USER = 6;
+constexpr int CHANNEL = 7;
+constexpr int ROLE = 8;
+constexpr int MENTIONABLE = 9;
+constexpr int NUMBER = 10;
+constexpr int ATTACHMENT = 11;
+} // namespace CommandOptionType
+
+struct CommandChoice {
+	std::string name;
+	// Kept as text; numeric options send it as a number.
+	std::string value;
+};
+
+struct CommandOption {
+	int type = 0;
+	std::string name;
+	std::string description;
+	bool required = false;
+	bool autocomplete = false;
+	std::vector<CommandChoice> choices;
+	std::vector<CommandOption> options;
+	std::vector<int> channelTypes;
+};
+
+// A slash command, as the application command index lists it.
+struct ApplicationCommand {
+	std::string id;
+	std::string applicationId;
+	std::string applicationName;
+	std::string version;
+	std::string name;
+	std::string description;
+	std::vector<CommandOption> options;
+	// The command object as Discord sent it, echoed back when running the command.
+	std::string rawJson;
+};
+
+// One filled-in option of a command being run; nested for subcommands.
+struct CommandValue {
+	int type = 0;
+	std::string name;
+	std::string value;
+	std::vector<CommandValue> options;
+};
+
 struct Sticker {
 	std::string id;
 	std::string name;

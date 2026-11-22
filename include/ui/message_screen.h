@@ -215,6 +215,7 @@ class MessageScreen : public Screen {
 	void openUploadConfirm(const std::string &path, bool fromCamera);
 	void openCamera();
 	void openGifPicker();
+	void openCommandPicker(const std::string &filter = "");
 	void startUpload(const UploadChoice &choice);
 	void sendText(const std::string &content);
 	void playVideo(const std::string &url, const std::string &localPath, const std::string &title,

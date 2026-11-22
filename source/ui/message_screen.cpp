@@ -7,6 +7,7 @@
 #include "log.h"
 #include "network/network_manager.h"
 #include "ui/camera_capture.h"
+#include "ui/command_picker.h"
 #include "ui/emoji_manager.h"
 #include "ui/file_browser.h"
 #include "ui/gif_picker.h"
@@ -858,6 +859,8 @@ void MessageScreen::update() {
 				openGifPicker();
 			} else if (action == "AttachCamera") {
 				openCamera();
+			} else if (action == "AttachCommand") {
+				openCommandPicker();
 			} else if (action == "Attach") {
 				showAttachMenu();
 			} else if (action == "Play") {
@@ -3525,6 +3528,14 @@ void MessageScreen::openKeyboard() {
 
 	auto res = runKeyboard(TR("common.message_hint"), channelDrafts[channelId]);
 
+	// A leading slash means a bot command, as in Discord's own chat box.
+	if (res.button == SWKBD_BUTTON_RIGHT && res.text.size() > 1 && res.text[0] == '/' &&
+	    res.text.find(' ') == std::string::npos) {
+		channelDrafts.erase(channelId);
+		openCommandPicker(res.text.substr(1));
+		return;
+	}
+
 	if (res.button == SWKBD_BUTTON_RIGHT && !res.text.empty()) {
 		channelDrafts.erase(channelId);
 		Discord::Message optimisticMsg = createOptimisticMessage(res.text);
@@ -4836,6 +4847,7 @@ void MessageScreen::showAttachMenu() {
 	addOption("AttachFile", "attach.file");
 	addOption("AttachGif", "attach.gif");
 	addOption("AttachCamera", "attach.camera");
+	addOption("AttachCommand", "attach.command");
 	addOption("Cancel", "message.menu.cancel");
 	isMenuOpen = true;
 	menuIndex = 0;
@@ -5138,6 +5150,53 @@ void MessageScreen::jumpToPresent() {
 		    }
 		    scrollToBottom();
 	    });
+}
+
+void MessageScreen::openCommandPicker(const std::string &filter) {
+	CommandPicker::People people;
+	{
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		const std::string self = Discord::DiscordClient::getInstance().getCurrentUser().id;
+		for (auto it = messages.rbegin(); it != messages.rend() && people.size() < 30; ++it) {
+			const Discord::User &author = it->author;
+			if (author.id.empty() || author.id == self) {
+				continue;
+			}
+			const bool seen = std::any_of(people.begin(), people.end(),
+			                              [&](const std::pair<std::string, std::string> &p) { return p.first == author.id; });
+			if (!seen) {
+				people.emplace_back(author.id, author.global_name.empty() ? author.username : author.global_name);
+			}
+		}
+	}
+	auto picker = std::make_unique<CommandPicker>(
+	    channelId, people,
+	    [this](const Discord::ApplicationCommand &command, const std::vector<Discord::CommandValue> &options) {
+		    const std::string nonce = std::to_string(osGetTime());
+		    {
+			    std::lock_guard<std::recursive_mutex> lock(messageMutex);
+			    // Tracked like a button press, so a bot that never answers still gets reported.
+			    interactionPending = true;
+			    interactionSentAt = osGetTime();
+			    interactionNonce = nonce;
+			    interactionMessageId.clear();
+			    interactionCustomId.clear();
+			    interactionControl = -1;
+		    }
+		    Discord::DiscordClient::getInstance().sendApplicationCommand(
+		        channelId, command, options, nonce, [this, token = aliveToken, nonce](bool success) {
+			        if (!success && *token) {
+				        onInteractionResult(nonce, Discord::InteractionResult::FAILURE);
+			        }
+		        });
+	    });
+	if (!filter.empty()) {
+		// The picker starts filtered to what was typed after the slash.
+		pushOverlay(std::move(picker));
+		static_cast<CommandPicker *>(overlays.back().get())->setFilter(filter);
+		return;
+	}
+	pushOverlay(std::move(picker));
 }
 
 } // namespace UI

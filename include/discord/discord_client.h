@@ -69,6 +69,7 @@ using RelationshipsCallback = std::function<void(bool success, const std::vector
 // message is Discord's own explanation when it gives one.
 using ActionCallback = std::function<void(bool success, const std::string &message)>;
 using ChannelCallback = std::function<void(const std::string &channelId)>;
+using CommandsCallback = std::function<void(bool success, const std::vector<ApplicationCommand> &commands)>;
 
 struct UploadRequest {
 	std::string channelId;
@@ -224,6 +225,11 @@ class DiscordClient {
 	                SendMessageCallback cb);
 	// The largest attachment Discord accepts from this account.
 	long long getUploadLimitBytes();
+	// Slash commands usable in a channel: the guild's (or DM's) bots plus user-installed apps.
+	void fetchApplicationCommands(const std::string &channelId, CommandsCallback cb);
+	void sendApplicationCommand(const std::string &channelId, const ApplicationCommand &command,
+	                            const std::vector<CommandValue> &options, const std::string &nonce, SuccessCallback cb);
+
 	// Friends and requests. The list is cached, so menus can tell a friend from a stranger.
 	void fetchRelationships(RelationshipsCallback cb = nullptr);
 	std::vector<Relationship> getRelationships();

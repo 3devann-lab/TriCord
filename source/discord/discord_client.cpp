@@ -41,6 +41,7 @@ constexpr int RESUMABLE_CLOSE_CODE = 4000;
 constexpr int RECONNECT_LATER_SECONDS = 60;
 // Heap kept free for everything the app does after login.
 constexpr size_t GUILD_DATA_RESERVE = 4 * 1024 * 1024;
+constexpr int INTERACTION_APPLICATION_COMMAND = 2;
 constexpr int INTERACTION_MESSAGE_COMPONENT = 3;
 constexpr int INTERACTION_MODAL_SUBMIT = 5;
 constexpr size_t MAX_EPHEMERAL_PER_CHANNEL = 20;
@@ -5042,6 +5043,246 @@ constexpr const char *CONTEXT_FRIENDS = "eyJsb2NhdGlvbiI6IkZyaWVuZHMifQ==";     
 constexpr const char *CONTEXT_MENU = "eyJsb2NhdGlvbiI6IkNvbnRleHRNZW51In0=";            // {"location":"ContextMenu"}
 
 } // namespace
+
+namespace {
+
+CommandOption parseCommandOption(const rapidjson::Value &o) {
+	CommandOption option;
+	option.type = Utils::Json::getInt(o, "type");
+	option.name = Utils::Json::getString(o, "name");
+	option.description = Utils::Json::getString(o, "description");
+	option.required = Utils::Json::getBool(o, "required");
+	option.autocomplete = Utils::Json::getBool(o, "autocomplete");
+	if (o.HasMember("choices") && o["choices"].IsArray()) {
+		for (const auto &c : o["choices"].GetArray()) {
+			if (!c.IsObject() || !c.HasMember("value")) {
+				continue;
+			}
+			CommandChoice choice;
+			choice.name = Utils::Json::getString(c, "name");
+			const rapidjson::Value &v = c["value"];
+			if (v.IsString()) {
+				choice.value = v.GetString();
+			} else if (v.IsInt64()) {
+				choice.value = std::to_string(v.GetInt64());
+			} else if (v.IsNumber()) {
+				char buffer[64];
+				snprintf(buffer, sizeof(buffer), "%.15g", v.GetDouble());
+				choice.value = buffer;
+			}
+			option.choices.push_back(std::move(choice));
+		}
+	}
+	if (o.HasMember("options") && o["options"].IsArray()) {
+		for (const auto &child : o["options"].GetArray()) {
+			if (child.IsObject()) {
+				option.options.push_back(parseCommandOption(child));
+			}
+		}
+	}
+	if (o.HasMember("channel_types") && o["channel_types"].IsArray()) {
+		for (const auto &t : o["channel_types"].GetArray()) {
+			if (t.IsInt()) {
+				option.channelTypes.push_back(t.GetInt());
+			}
+		}
+	}
+	return option;
+}
+
+void collectCommands(const rapidjson::Document &doc, std::vector<ApplicationCommand> &out) {
+	if (!doc.IsObject()) {
+		return;
+	}
+	std::map<std::string, std::string> appNames;
+	if (doc.HasMember("applications") && doc["applications"].IsArray()) {
+		for (const auto &app : doc["applications"].GetArray()) {
+			if (app.IsObject()) {
+				appNames[Utils::Json::getString(app, "id")] = Utils::Json::getString(app, "name");
+			}
+		}
+	}
+	if (!doc.HasMember("application_commands") || !doc["application_commands"].IsArray()) {
+		return;
+	}
+	for (const auto &c : doc["application_commands"].GetArray()) {
+		// Type 1 is a chat-input (slash) command; 2 and 3 are context-menu commands.
+		if (!c.IsObject() || Utils::Json::getInt(c, "type") != 1) {
+			continue;
+		}
+		ApplicationCommand command;
+		command.id = Utils::Json::getString(c, "id");
+		command.applicationId = Utils::Json::getString(c, "application_id");
+		command.version = Utils::Json::getString(c, "version");
+		command.name = Utils::Json::getString(c, "name");
+		command.description = Utils::Json::getString(c, "description");
+		auto app = appNames.find(command.applicationId);
+		if (app != appNames.end()) {
+			command.applicationName = app->second;
+		}
+		if (c.HasMember("options") && c["options"].IsArray()) {
+			for (const auto &o : c["options"].GetArray()) {
+				if (o.IsObject()) {
+					command.options.push_back(parseCommandOption(o));
+				}
+			}
+		}
+		rapidjson::StringBuffer buffer;
+		rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+		c.Accept(writer);
+		command.rawJson = buffer.GetString();
+		bool duplicate = false;
+		for (const auto &existing : out) {
+			duplicate = duplicate || existing.id == command.id;
+		}
+		if (!duplicate && !command.id.empty()) {
+			out.push_back(std::move(command));
+		}
+	}
+}
+
+void writeCommandValues(rapidjson::Writer<rapidjson::StringBuffer> &writer, const std::vector<CommandValue> &values) {
+	writer.StartArray();
+	for (const auto &v : values) {
+		writer.StartObject();
+		writer.Key("type");
+		writer.Int(v.type);
+		writer.Key("name");
+		writer.String(v.name.c_str());
+		if (v.type == CommandOptionType::SUB_COMMAND || v.type == CommandOptionType::SUB_COMMAND_GROUP) {
+			writer.Key("options");
+			writeCommandValues(writer, v.options);
+		} else {
+			writer.Key("value");
+			if (v.type == CommandOptionType::INTEGER) {
+				writer.Int64(strtoll(v.value.c_str(), nullptr, 10));
+			} else if (v.type == CommandOptionType::NUMBER) {
+				writer.Double(strtod(v.value.c_str(), nullptr));
+			} else if (v.type == CommandOptionType::BOOLEAN) {
+				writer.Bool(v.value == "true");
+			} else {
+				writer.String(v.value.c_str());
+			}
+		}
+		writer.EndObject();
+	}
+	writer.EndArray();
+}
+
+struct CommandFetch {
+	std::mutex mutex;
+	int remaining = 2;
+	bool anySuccess = false;
+	std::vector<ApplicationCommand> commands;
+};
+
+} // namespace
+
+void DiscordClient::fetchApplicationCommands(const std::string &channelId, CommandsCallback cb) {
+	if (token.empty() || channelId.empty()) {
+		if (cb) {
+			cb(false, {});
+		}
+		return;
+	}
+	const std::string guildId = getGuildIdFromChannel(channelId);
+	const std::string scoped = (!guildId.empty() && guildId != "DM")
+	                               ? "https://discord.com/api/v9/guilds/" + guildId + "/application-command-index"
+	                               : "https://discord.com/api/v9/channels/" + channelId + "/application-command-index";
+	auto fetch = std::make_shared<CommandFetch>();
+	auto handle = [fetch, cb](Network::HttpResponse &resp) {
+		bool finished = false;
+		{
+			std::lock_guard<std::mutex> lock(fetch->mutex);
+			if (resp.success) {
+				rapidjson::Document doc;
+				doc.Parse(resp.body.c_str());
+				if (!doc.HasParseError()) {
+					collectCommands(doc, fetch->commands);
+					fetch->anySuccess = true;
+				}
+			} else {
+				Logger::log("[Commands] Index request failed: %d", (int)resp.statusCode);
+			}
+			finished = --fetch->remaining == 0;
+		}
+		if (finished && cb) {
+			std::vector<ApplicationCommand> sorted = fetch->commands;
+			std::sort(sorted.begin(), sorted.end(),
+			          [](const ApplicationCommand &a, const ApplicationCommand &b) { return a.name < b.name; });
+			cb(fetch->anySuccess, sorted);
+		}
+	};
+	Network::NetworkManager::getInstance().enqueue(scoped, "GET", "", Network::RequestPriority::INTERACTIVE, handle,
+	                                               {{"Authorization", token}});
+	Network::NetworkManager::getInstance().enqueue("https://discord.com/api/v9/users/@me/application-command-index",
+	                                               "GET", "", Network::RequestPriority::INTERACTIVE, handle,
+	                                               {{"Authorization", token}});
+}
+
+void DiscordClient::sendApplicationCommand(const std::string &channelId, const ApplicationCommand &command,
+                                           const std::vector<CommandValue> &options, const std::string &nonce,
+                                           SuccessCallback cb) {
+	if (token.empty()) {
+		if (cb) {
+			cb(false);
+		}
+		return;
+	}
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+	writer.StartObject();
+	writer.Key("type");
+	writer.Int(INTERACTION_APPLICATION_COMMAND);
+	writer.Key("application_id");
+	writer.String(command.applicationId.c_str());
+	const std::string guildId = getGuildIdFromChannel(channelId);
+	if (!guildId.empty() && guildId != "DM") {
+		writer.Key("guild_id");
+		writer.String(guildId.c_str());
+	}
+	writer.Key("channel_id");
+	writer.String(channelId.c_str());
+	writer.Key("session_id");
+	writer.String(getSessionId().c_str());
+	writer.Key("nonce");
+	writer.String(nonce.c_str());
+	writer.Key("analytics_location");
+	writer.String("slash_ui");
+	writer.Key("data");
+	writer.StartObject();
+	writer.Key("version");
+	writer.String(command.version.c_str());
+	writer.Key("id");
+	writer.String(command.id.c_str());
+	writer.Key("name");
+	writer.String(command.name.c_str());
+	writer.Key("type");
+	writer.Int(1);
+	writer.Key("options");
+	writeCommandValues(writer, options);
+	if (!command.rawJson.empty()) {
+		writer.Key("application_command");
+		writer.RawValue(command.rawJson.c_str(), command.rawJson.size(), rapidjson::kObjectType);
+	}
+	writer.Key("attachments");
+	writer.StartArray();
+	writer.EndArray();
+	writer.EndObject();
+	writer.EndObject();
+
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/interactions", "POST", s.GetString(), Network::RequestPriority::REALTIME,
+	    [cb](const Network::HttpResponse &resp) {
+		    if (!resp.success) {
+			    Logger::log("[Commands] Interaction failed: %ld %s", resp.statusCode, resp.body.substr(0, 200).c_str());
+		    }
+		    if (cb) {
+			    cb(resp.success);
+		    }
+	    },
+	    {{"Authorization", token}, {"Content-Type", "application/json"}});
+}
 
 void DiscordClient::fetchRelationships(RelationshipsCallback cb) {
 	if (token.empty()) {
