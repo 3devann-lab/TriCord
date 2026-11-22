@@ -245,6 +245,12 @@ void Config::loadSettings() {
 			if (doc.HasMember("mic_volume") && doc["mic_volume"].IsInt()) {
 				micVolume = std::clamp(doc["mic_volume"].GetInt(), 0, 200);
 			}
+			if (doc.HasMember("hardware_video") && doc["hardware_video"].IsBool()) {
+				hardwareVideo = doc["hardware_video"].GetBool();
+			}
+			if (doc.HasMember("video_volume") && doc["video_volume"].IsInt()) {
+				videoVolume = std::clamp(doc["video_volume"].GetInt(), 0, 200);
+			}
 			if (doc.HasMember("user_volumes") && doc["user_volumes"].IsObject()) {
 				userVolumes.clear();
 				for (auto it = doc["user_volumes"].MemberBegin(); it != doc["user_volumes"].MemberEnd(); ++it) {
@@ -297,6 +303,10 @@ void Config::saveSettings() {
 	writer.Bool(showHiddenChannels);
 	writer.Key("mic_volume");
 	writer.Int(micVolume);
+	writer.Key("hardware_video");
+	writer.Bool(hardwareVideo);
+	writer.Key("video_volume");
+	writer.Int(videoVolume);
 	writer.Key("user_volumes");
 	writer.StartObject();
 	for (const auto &pair : userVolumes) {
@@ -324,6 +334,18 @@ void Config::setDisclaimerAccepted(bool accepted) {
 void Config::setMicVolume(int volumePercent) {
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	micVolume = std::clamp(volumePercent, 0, 200);
+	saveSettings();
+}
+
+void Config::setHardwareVideoEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	hardwareVideo = enabled;
+	saveSettings();
+}
+
+void Config::setVideoVolume(int volumePercent) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	videoVolume = std::clamp(volumePercent, 0, 200);
 	saveSettings();
 }
 

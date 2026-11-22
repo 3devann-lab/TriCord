@@ -8,7 +8,10 @@
 #include "utils/gif_decoder.h"
 #include "utils/image_utils.h"
 #include "utils/json_utils.h"
+#include "utils/base64_utils.h"
+#include "utils/file_utils.h"
 #include "utils/message_utils.h"
+#include "utils/protobuf.h"
 #include "utils/redraw.h"
 #include "utils/system_utils.h"
 #include "utils/sound_player.h"
@@ -2593,6 +2596,7 @@ User DiscordClient::parseUserObject(const rapidjson::Value &uObj) {
 	u.avatar = Utils::Json::getString(uObj, "avatar");
 	u.discriminator = Utils::Json::getString(uObj, "discriminator");
 	u.bot = Utils::Json::getBool(uObj, "bot");
+	u.premium_type = Utils::Json::getInt(uObj, "premium_type");
 	return u;
 }
 
@@ -2704,8 +2708,15 @@ Embed DiscordClient::parseEmbedObject(const rapidjson::Value &eObj) {
 		embed.thumbnail_width = Utils::Json::getInt(thumb, "width");
 		embed.thumbnail_height = Utils::Json::getInt(thumb, "height");
 	}
-	if (embed.type == "gifv" && eObj.HasMember("video") && eObj["video"].IsObject()) {
-		embed.gif_url = gifvUrl(embed, eObj["video"]);
+	if (eObj.HasMember("video") && eObj["video"].IsObject()) {
+		const rapidjson::Value &video = eObj["video"];
+		embed.video_url = Utils::Json::getString(video, "url");
+		embed.video_proxy_url = Utils::Json::getString(video, "proxy_url");
+		embed.video_width = Utils::Json::getInt(video, "width");
+		embed.video_height = Utils::Json::getInt(video, "height");
+		if (embed.type == "gifv") {
+			embed.gif_url = gifvUrl(embed, video);
+		}
 	}
 	if (eObj.HasMember("fields") && eObj["fields"].IsArray()) {
 		const rapidjson::Value &fields = eObj["fields"];
@@ -3859,6 +3870,228 @@ void DiscordClient::postMessage(const std::string &channelId, const std::string 
 	    {{"Authorization", token},
 	     {"Content-Type", "application/json"},
 	     {"X-Context-Properties", "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ=="}});
+}
+
+long long DiscordClient::getUploadLimitBytes() {
+	int premium = 0;
+	{
+		std::lock_guard<std::recursive_mutex> lock(clientMutex);
+		premium = currentUser.premium_type;
+	}
+	constexpr long long MB = 1024LL * 1024LL;
+	switch (premium) {
+	case 1: // Nitro Classic
+	case 3: // Nitro Basic
+		return 50 * MB;
+	case 2: // Nitro
+		return 500 * MB;
+	default:
+		return 10 * MB;
+	}
+}
+
+void DiscordClient::uploadFile(const UploadRequest &request, std::shared_ptr<Network::TransferProgress> progress,
+                               SendMessageCallback cb) {
+	if (token.empty() || request.channelId.empty() || request.path.empty()) {
+		if (cb) {
+			cb(Message(), false, 0);
+		}
+		return;
+	}
+
+	std::string filename = request.filename.empty() ? Utils::File::baseName(request.path) : request.filename;
+	if (request.spoiler && filename.rfind("SPOILER_", 0) != 0) {
+		filename = "SPOILER_" + filename;
+	}
+
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+	writer.StartObject();
+	writer.Key("content");
+	writer.String(request.caption.c_str());
+	writer.Key("nonce");
+	writer.String(request.nonce.empty() ? std::to_string(osGetTime()).c_str() : request.nonce.c_str());
+	writer.Key("tts");
+	writer.Bool(false);
+	writer.Key("flags");
+	writer.Int(0);
+	if (!request.replyId.empty()) {
+		writer.Key("message_reference");
+		writer.StartObject();
+		writer.Key("message_id");
+		writer.String(request.replyId.c_str());
+		writer.EndObject();
+	}
+	writer.Key("attachments");
+	writer.StartArray();
+	writer.StartObject();
+	writer.Key("id");
+	writer.String("0");
+	writer.Key("filename");
+	writer.String(filename.c_str());
+	writer.EndObject();
+	writer.EndArray();
+	writer.EndObject();
+
+	Network::HttpRequest http{"https://discord.com/api/v10/channels/" + request.channelId + "/messages", "POST", "",
+	                          {{"Authorization", token},
+	                           {"X-Context-Properties", "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ=="}},
+	                          0};
+	http.multipart.push_back({"payload_json", s.GetString(), "", "", "application/json"});
+	http.multipart.push_back(
+	    {"files[0]", "", request.path, filename, Utils::File::mimeType(request.path)});
+	http.progress = std::move(progress);
+
+	Logger::log("[Upload] %s (%lld bytes) to %s", request.path.c_str(), Utils::File::fileSize(request.path),
+	            request.channelId.c_str());
+
+	Network::NetworkManager::getInstance().enqueue(
+	    std::move(http), Network::RequestPriority::INTERACTIVE, [this, cb](Network::HttpResponse &resp) {
+		    if (!resp.success || resp.statusCode >= 400) {
+			    Logger::log("[Upload] Failed: %d (%s) %s", (int)resp.statusCode, resp.error.c_str(),
+			                resp.body.substr(0, 200).c_str());
+			    if (cb) {
+				    cb(Message(), false, (int)resp.statusCode);
+			    }
+			    return;
+		    }
+		    if (cb) {
+			    cb(parseSingleMessage(resp.body), true, (int)resp.statusCode);
+		    }
+	    });
+}
+
+std::string DiscordClient::favoriteGifPreviewUrl(const FavoriteGif &gif) {
+	for (const std::string *candidate : {&gif.src, &gif.url}) {
+		std::string tenor = tenorGifUrl(*candidate);
+		if (!tenor.empty()) {
+			return tenor;
+		}
+	}
+
+	// Giphy keeps every rendition beside the original, and 200w.gif is the 200px wide one.
+	const size_t giphy = gif.src.find("giphy.com/media/");
+	if (giphy != std::string::npos) {
+		const size_t slash = gif.src.find_last_of('/');
+		if (slash != std::string::npos && slash > giphy) {
+			return gif.src.substr(0, slash + 1) + "200w.gif";
+		}
+	}
+
+	const std::string path = gif.src.substr(0, gif.src.find('?'));
+	const bool discordMedia = gif.src.find("cdn.discordapp.com") != std::string::npos ||
+	                          gif.src.find("media.discordapp.net") != std::string::npos;
+	// The media proxy renders a still of a video when asked for a JPEG, which ImageManager does for it.
+	if (Utils::File::isImagePath(path) || discordMedia) {
+		return gif.src;
+	}
+	return "";
+}
+
+void DiscordClient::fetchFavoriteGifs(FavoriteGifsCallback cb) {
+	if (token.empty()) {
+		if (cb) {
+			cb(false, {});
+		}
+		return;
+	}
+
+	// Type 2 is FrecencyUserSettings, which holds the favorites.
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/settings-proto/2", "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [cb](Network::HttpResponse &resp) {
+		    std::vector<FavoriteGif> gifs;
+		    if (!resp.success) {
+			    Logger::log("[GIF] Favorites request failed: %d (%s)", (int)resp.statusCode, resp.error.c_str());
+			    if (cb) {
+				    cb(false, gifs);
+			    }
+			    return;
+		    }
+
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (doc.HasParseError() || !doc.IsObject()) {
+			    if (cb) {
+				    cb(false, gifs);
+			    }
+			    return;
+		    }
+		    const std::vector<unsigned char> proto = Utils::Base64::decode(Utils::Json::getString(doc, "settings"));
+
+		    // FrecencyUserSettings.favorite_gifs (2) -> FavoriteGIFs.gifs (1), a map<string, FavoriteGIF>.
+		    Utils::Proto::Reader settings(proto.data(), proto.size());
+		    uint32_t field = 0;
+		    uint32_t wire = 0;
+		    while (settings.next(field, wire)) {
+			    if (field != 2 || wire != Utils::Proto::Reader::LENGTH) {
+				    settings.skip(wire);
+				    continue;
+			    }
+			    const uint8_t *favData = nullptr;
+			    size_t favSize = 0;
+			    if (!settings.readBytes(favData, favSize)) {
+				    break;
+			    }
+			    Utils::Proto::Reader favorites(favData, favSize);
+			    while (favorites.next(field, wire)) {
+				    if (field != 1 || wire != Utils::Proto::Reader::LENGTH) {
+					    favorites.skip(wire);
+					    continue;
+				    }
+				    const uint8_t *entryData = nullptr;
+				    size_t entrySize = 0;
+				    if (!favorites.readBytes(entryData, entrySize)) {
+					    break;
+				    }
+				    FavoriteGif gif;
+				    Utils::Proto::Reader entry(entryData, entrySize);
+				    while (entry.next(field, wire)) {
+					    if (field == 1 && wire == Utils::Proto::Reader::LENGTH) {
+						    entry.readString(gif.url);
+					    } else if (field == 2 && wire == Utils::Proto::Reader::LENGTH) {
+						    const uint8_t *valueData = nullptr;
+						    size_t valueSize = 0;
+						    if (!entry.readBytes(valueData, valueSize)) {
+							    break;
+						    }
+						    Utils::Proto::Reader value(valueData, valueSize);
+						    uint64_t number = 0;
+						    while (value.next(field, wire)) {
+							    if (field == 2 && wire == Utils::Proto::Reader::LENGTH) {
+								    value.readString(gif.src);
+							    } else if (wire == Utils::Proto::Reader::VARINT && value.readVarint(number)) {
+								    if (field == 1) {
+									    gif.format = (int)number;
+								    } else if (field == 3) {
+									    gif.width = (int)number;
+								    } else if (field == 4) {
+									    gif.height = (int)number;
+								    } else if (field == 5) {
+									    gif.order = (int)number;
+								    }
+							    } else {
+								    value.skip(wire);
+							    }
+						    }
+					    } else {
+						    entry.skip(wire);
+					    }
+				    }
+				    if (!gif.url.empty()) {
+					    gifs.push_back(std::move(gif));
+				    }
+			    }
+		    }
+
+		    std::stable_sort(gifs.begin(), gifs.end(),
+		                     [](const FavoriteGif &a, const FavoriteGif &b) { return a.order > b.order; });
+		    Logger::log("[GIF] Loaded %zu favorite GIFs", gifs.size());
+		    if (cb) {
+			    cb(true, gifs);
+		    }
+	    },
+	    {{"Authorization", token}});
 }
 
 void DiscordClient::sendMessageAsync(const std::string &channelId, const std::string &content, SuccessCallback cb) {

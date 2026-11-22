@@ -32,6 +32,9 @@ class SoundPlayer {
 	void init();
 	void shutdown();
 
+	// False when NDSP could not start, e.g. without a dumped DSP firmware.
+	bool isReady() const { return ready; }
+
 	void play(Sound sound);
 	void stop();
 	int clipFrames(Sound sound);

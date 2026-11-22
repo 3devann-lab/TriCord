@@ -6,6 +6,7 @@
 
 #include <3ds.h>
 #include <algorithm>
+#include <cstdio>
 
 namespace Network {
 
@@ -30,7 +31,7 @@ struct NetworkManager::Transfer {
 	SyncWait *waiter = nullptr;
 	HttpResponse response;
 	CURL *easy = nullptr;
-	curl_slist *headers = nullptr;
+	TransferResources resources;
 };
 
 NetworkManager::NetworkManager() = default;
@@ -98,6 +99,17 @@ void NetworkManager::enqueue(std::string url, std::string method, std::string bo
 	auto transfer = std::make_unique<Transfer>();
 	transfer->request = {std::move(url), std::move(method), std::move(body), std::move(extraHeaders),
 	                     HTTP_TIMEOUT_SECONDS};
+	transfer->priority = (int)priority;
+	transfer->callback = std::move(callback);
+	submit(std::move(transfer));
+}
+
+void NetworkManager::enqueue(HttpRequest request, RequestPriority priority, ResponseCallback callback) {
+	auto transfer = std::make_unique<Transfer>();
+	transfer->request = std::move(request);
+	if (transfer->request.timeoutSeconds <= 0) {
+		transfer->request.timeoutSeconds = HTTP_TIMEOUT_SECONDS;
+	}
 	transfer->priority = (int)priority;
 	transfer->callback = std::move(callback);
 	submit(std::move(transfer));
@@ -180,7 +192,7 @@ void NetworkManager::startQueued() {
 		}
 
 		transfer->easy = easy;
-		transfer->headers = prepareTransfer(easy, transfer->request, transfer->response);
+		transfer->resources = prepareTransfer(easy, transfer->request, transfer->response);
 		curl_multi_add_handle(multi, easy);
 		active.push_back(std::move(transfer));
 	}
@@ -197,10 +209,11 @@ void NetworkManager::finish(std::unique_ptr<Transfer> transfer, CURLcode result)
 
 	if (transfer->easy) {
 		curl_multi_remove_handle(multi, transfer->easy);
-		curl_slist_free_all(transfer->headers);
 		idleHandles.push_back(transfer->easy);
 		transfer->easy = nullptr;
 	}
+	// Closes a download's file before anyone is told it finished.
+	transfer->resources.release();
 
 	const int priority = transfer->priority;
 	if (transfer->waiter) {
@@ -244,7 +257,7 @@ bool NetworkManager::collectFinished() {
 void NetworkManager::failAll() {
 	for (std::unique_ptr<Transfer> &transfer : active) {
 		curl_multi_remove_handle(multi, transfer->easy);
-		curl_slist_free_all(transfer->headers);
+		transfer->resources.release();
 		curl_easy_cleanup(transfer->easy);
 		if (transfer->waiter) {
 			transfer->waiter->response.error = "Network is shutting down";
@@ -348,6 +361,36 @@ void NetworkManager::callbackLoop(bool includeBackground) {
 			UI::MessageUtils::syncClock(transfer->response.date);
 		}
 	}
+}
+
+void downloadFile(const std::string &url, const std::string &path, std::shared_ptr<TransferProgress> progress,
+                  DownloadCallback callback, std::map<std::string, std::string> headers, RequestPriority priority) {
+	const std::string partial = path + ".part";
+	HttpRequest request{url, "GET", "", std::move(headers), 0};
+	request.downloadPath = partial;
+	request.progress = std::move(progress);
+	NetworkManager::getInstance().enqueue(
+	    std::move(request), priority, [path, partial, callback](HttpResponse &resp) {
+		    bool ok = resp.success && resp.error.empty();
+		    if (ok) {
+			    remove(path.c_str());
+			    ok = rename(partial.c_str(), path.c_str()) == 0;
+			    if (!ok) {
+				    resp.error = "Could not write to the SD card";
+			    }
+		    } else {
+			    remove(partial.c_str());
+			    if (resp.error.empty()) {
+				    resp.error = "HTTP " + std::to_string(resp.statusCode);
+			    }
+		    }
+		    if (!ok) {
+			    Logger::log("[Download] %s failed: %s", path.c_str(), resp.error.c_str());
+		    }
+		    if (callback) {
+			    callback(ok, resp.statusCode, resp.error);
+		    }
+	    });
 }
 
 } // namespace Network

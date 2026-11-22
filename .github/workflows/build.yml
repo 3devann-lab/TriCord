@@ -1,0 +1,85 @@
+name: Build CIA
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - 'TriCord.cia'
+      - '**.md'
+      - 'screenshots/**'
+  pull_request:
+  workflow_dispatch:
+
+# Needed to commit the built CIA back to the repository.
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      # git has to be there before checkout, or it falls back to a tarball with no history to commit to.
+      - name: Install host tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git curl unzip xz-utils python3 file ca-certificates
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install makerom and bannertool
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/install_cia_tools.sh /usr/local/bin
+
+      - name: Restore FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: library/ffmpeg
+          key: ffmpeg-3ds-${{ hashFiles('scripts/build_ffmpeg.sh') }}
+
+      - name: Build FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: scripts/build_ffmpeg.sh
+
+      - name: Build TriCord
+        run: make -j"$(nproc)"
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: TriCord-${{ github.sha }}
+          path: |
+            TriCord.cia
+            TriCord.3dsx
+
+      - name: Commit TriCord.cia to the repository root
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f TriCord.cia
+          if git diff --cached --quiet; then
+            echo "TriCord.cia is unchanged."
+            exit 0
+          fi
+          # [skip ci] keeps this commit from building again.
+          git commit -m "Update TriCord.cia for ${GITHUB_SHA::7} [skip ci]"
+          for attempt in 1 2 3 4; do
+            if git push origin "HEAD:${BRANCH}"; then
+              exit 0
+            fi
+            echo "Push rejected, rebasing onto the latest ${BRANCH} (attempt ${attempt})"
+            git pull --rebase -X theirs origin "${BRANCH}"
+            sleep $((attempt * 5))
+          done
+          exit 1

@@ -30,6 +30,8 @@ class NetworkManager {
 
 	void enqueue(std::string url, std::string method, std::string body, RequestPriority priority,
 	             ResponseCallback callback, std::map<std::string, std::string> extraHeaders = {});
+	// For requests that need more than a body: multipart uploads, downloads to a file, progress.
+	void enqueue(HttpRequest request, RequestPriority priority, ResponseCallback callback);
 
 	HttpResponse perform(HttpRequest request);
 
@@ -79,6 +81,14 @@ class NetworkManager {
 	std::vector<std::unique_ptr<Transfer>> active;
 	std::vector<CURL *> idleHandles;
 };
+
+using DownloadCallback = std::function<void(bool success, long statusCode, const std::string &error)>;
+
+// Streams url to path on the SD card. The file only appears once complete, so
+// a cancelled or failed download never leaves a truncated copy behind.
+void downloadFile(const std::string &url, const std::string &path, std::shared_ptr<TransferProgress> progress,
+                  DownloadCallback callback, std::map<std::string, std::string> headers = {},
+                  RequestPriority priority = RequestPriority::INTERACTIVE);
 
 } // namespace Network
 

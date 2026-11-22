@@ -18,6 +18,8 @@ struct User {
 	std::string avatar;
 	bool bot = false;
 	UserStatus status = UserStatus::UNKNOWN;
+	// 0 none, 1 Nitro Classic, 2 Nitro, 3 Nitro Basic. Only sent for the current user.
+	int premium_type = 0;
 };
 
 struct Overwrite {
@@ -168,6 +170,10 @@ struct Embed {
 	int thumbnail_width = 0;
 	int thumbnail_height = 0;
 	std::string gif_url;
+	std::string video_url;
+	std::string video_proxy_url;
+	int video_width = 0;
+	int video_height = 0;
 	std::string provider_name;
 	std::string type;
 	std::string timestamp;
@@ -188,6 +194,18 @@ struct Attachment {
 	int height = 0;
 	std::string content_type;
 	bool spoiler = false;
+};
+
+// One entry of the user's favorite GIFs, from the frecency settings proto.
+struct FavoriteGif {
+	// The link Discord sends when the GIF is picked, e.g. a tenor.com/view page.
+	std::string url;
+	// The media file itself, which is usually an MP4.
+	std::string src;
+	int format = 0; // 1 image, 2 video
+	int width = 0;
+	int height = 0;
+	int order = 0;
 };
 
 struct Sticker {

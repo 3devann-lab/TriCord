@@ -5,15 +5,23 @@
 #include "discord/discord_client.h"
 #include "discord/voice_client.h"
 #include "log.h"
+#include "network/network_manager.h"
+#include "ui/camera_capture.h"
 #include "ui/emoji_manager.h"
+#include "ui/file_browser.h"
+#include "ui/gif_picker.h"
 #include "ui/image_manager.h"
+#include "ui/upload_confirm.h"
+#include "ui/video_player.h"
 #include "ui/voice_controls.h"
 #include "ui/voice_popup.h"
 #include "ui/markdown_renderer.h"
 #include "ui/screen_manager.h"
+#include "utils/file_utils.h"
 #include "utils/message_utils.h"
 #include "utils/redraw.h"
 #include "utils/utf8_utils.h"
+#include "utils/video_decoder.h"
 #include <3ds.h>
 #include <algorithm>
 #include <citro2d.h>
@@ -55,10 +63,56 @@ std::string embedMediaUrl(const Discord::Embed &embed, const EmbedLayout &layout
 	return embed.thumbnail_proxy_url.empty() ? embed.thumbnail_url : embed.thumbnail_proxy_url;
 }
 
+bool hasRemoteFile(const Discord::Attachment &attach) { return !attach.url.empty() || !attach.proxy_url.empty(); }
+
 bool isImageAttachment(const Discord::Attachment &attach) {
+	// An upload still on its way has no URL yet, and shows as a file line until Discord answers.
+	if (!hasRemoteFile(attach)) {
+		return false;
+	}
 	return attach.content_type.find("image/") != std::string::npos ||
 	       attach.filename.find(".png") != std::string::npos || attach.filename.find(".jpg") != std::string::npos ||
 	       attach.filename.find(".jpeg") != std::string::npos || attach.filename.find(".gif") != std::string::npos;
+}
+
+bool isVideoAttachment(const Discord::Attachment &attach) {
+	if (!hasRemoteFile(attach)) {
+		return false;
+	}
+	return attach.content_type.rfind("video/", 0) == 0 || Utils::File::isVideoPath(attach.filename);
+}
+
+// Images, and videos, which show the still the media proxy renders for them.
+bool isVisualAttachment(const Discord::Attachment &attach) {
+	return isImageAttachment(attach) || isVideoAttachment(attach);
+}
+
+bool isMediaFileUrl(const std::string &url) {
+	const std::string path = url.substr(0, url.find('?'));
+	return Utils::File::isVideoPath(path);
+}
+
+// The file behind a video or gifv embed, when it is one this player can fetch. YouTube and the like only offer a
+// page to embed, which is no use here.
+std::string embedVideoUrl(const Discord::Embed &embed) {
+	if (embed.video_url.empty() && embed.video_proxy_url.empty()) {
+		return "";
+	}
+	if (isMediaFileUrl(embed.video_url)) {
+		return embed.video_url;
+	}
+	if (isMediaFileUrl(embed.video_proxy_url) || embed.video_proxy_url.find("discordapp.net") != std::string::npos) {
+		return embed.video_proxy_url;
+	}
+	return "";
+}
+
+void drawPlayBadge(float x, float y, float w, float h) {
+	const float cx = x + w / 2.0f;
+	const float cy = y + h / 2.0f;
+	UI::drawCircle(cx, cy, 0.52f, 14.0f, C2D_Color32(0, 0, 0, 160));
+	const u32 white = C2D_Color32(255, 255, 255, 235);
+	C2D_DrawTriangle(cx - 4.5f, cy - 7.0f, white, cx - 4.5f, cy + 7.0f, white, cx + 7.5f, cy, white, 0.53f);
 }
 
 void markDrawnIfVisible(const UI::ImageManager::ImageInfo &info, float y, float height) {
@@ -156,7 +210,7 @@ void fitAttachment(const Discord::Attachment &attach, const ImageManager::ImageI
 }
 
 float attachmentHeight(const Discord::Attachment &attach, float maxWidth) {
-	if (!isImageAttachment(attach)) {
+	if (!isVisualAttachment(attach)) {
 		return 12.0f;
 	}
 	float drawW = 0.0f;
@@ -524,6 +578,12 @@ void MessageScreen::onEnter() {
 }
 
 bool MessageScreen::isAnimating() const {
+	if (Overlay *top = topOverlay()) {
+		return top->isAnimating();
+	}
+	if (!uploads.empty()) {
+		return true;
+	}
 	if (bottomMode == BottomScreenMode::EMOJI_PICKER && emojiPicker && emojiPicker->isAnimating()) {
 		return true;
 	}
@@ -533,7 +593,7 @@ bool MessageScreen::isAnimating() const {
 	return currentScrollY != targetScrollY;
 }
 
-bool MessageScreen::hidesMenu() const { return bottomMode == BottomScreenMode::EMOJI_PICKER; }
+bool MessageScreen::hidesMenu() const { return !overlays.empty() || bottomMode == BottomScreenMode::EMOJI_PICKER; }
 
 void MessageScreen::flushMemberFetches() {
 	if (queuedMemberFetches.empty()) {
@@ -558,6 +618,9 @@ void MessageScreen::flushMemberFetches() {
 }
 
 void MessageScreen::update() {
+	if (updateOverlay()) {
+		return;
+	}
 	flushMemberFetches();
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
@@ -581,6 +644,10 @@ void MessageScreen::update() {
 	if (!interactionToast.empty()) {
 		ScreenManager::getInstance().showToast(Core::I18n::getInstance().get(interactionToast));
 		interactionToast.clear();
+	}
+	if (!pendingToastText.empty()) {
+		ScreenManager::getInstance().showToast(pendingToastText);
+		pendingToastText.clear();
 	}
 
 	u32 kDown = hidKeysDown();
@@ -629,6 +696,9 @@ void MessageScreen::update() {
 
 				if (isScrollBtnVisible && isTouched(btnX, btnY, btnW, btnH)) {
 					scrollToBottom();
+					handled = true;
+				} else if (canAttach() && isTouched(attachButtonX(isScrollBtnVisible), btnY, btnW, btnH)) {
+					showAttachMenu();
 					handled = true;
 				} else if (isTouched(reactBtnX, btnY, btnW, btnH)) {
 					if (!selectedIsEphemeral()) {
@@ -770,7 +840,19 @@ void MessageScreen::update() {
 			std::string action = menuActions[menuIndex];
 			isMenuOpen = false;
 
-			if (action == "ToggleSpoiler") {
+			if (action == "AttachFile") {
+				openFileBrowser();
+			} else if (action == "AttachGif") {
+				openGifPicker();
+			} else if (action == "AttachCamera") {
+				openCamera();
+			} else if (action == "Attach") {
+				showAttachMenu();
+			} else if (action == "Play") {
+				playSelectedVideo(true);
+			} else if (action == "Save") {
+				saveSelectedAttachments();
+			} else if (action == "ToggleSpoiler") {
 				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
 					const std::string &id = messages[selectedIndex].id;
 					if (!revealedSpoilers.erase(id)) {
@@ -1058,6 +1140,8 @@ void MessageScreen::update() {
 					return;
 				} else if (enterComponentMode()) {
 					return;
+				} else if (playSelectedVideo(false)) {
+					return;
 				} else {
 					if (!selectedIsEphemeral()) {
 						bottomMode = BottomScreenMode::EMOJI_PICKER;
@@ -1077,6 +1161,11 @@ void MessageScreen::update() {
 			if (selectedIndex >= 0 && selectedIndex < (int)this->messages.size()) {
 				showMessageOptions();
 			}
+		}
+
+		// L+R toggles the debug overlay, so R only counts on its own.
+		if ((kDown & KEY_R) && !(kHeld & KEY_L) && canAttach()) {
+			showAttachMenu();
 		}
 	}
 
@@ -1635,7 +1724,7 @@ float MessageScreen::drawAttachment(const Discord::Attachment &attach, float x, 
                                     bool revealed) {
 	const bool hidden = attach.spoiler && !revealed;
 
-	if (!isImageAttachment(attach)) {
+	if (!isVisualAttachment(attach)) {
 		const std::string name = hidden ? TR("message.spoiler") : attach.filename;
 		drawText(x, y, 0.5f, 0.35f, 0.35f, ScreenManager::colorTextMuted(),
 		         Core::I18n::format(TR("message.file"), name));
@@ -1649,6 +1738,9 @@ float MessageScreen::drawAttachment(const Discord::Attachment &attach, float x, 
 
 	if (y + drawH >= -30.0f && y <= 240.0f + 10.0f) {
 		drawAttachmentImage(attach, info, x, y, drawW, drawH, hidden);
+		if (isVideoAttachment(attach) && !hidden) {
+			drawPlayBadge(x, y, drawW, drawH);
+		}
 	}
 	return y + drawH + 4.0f;
 }
@@ -2957,6 +3049,10 @@ float MessageScreen::drawMessage(const Discord::Message &msg, float y, float max
 }
 
 void MessageScreen::renderTop(C3D_RenderTarget *target) {
+	if (Overlay *top = topOverlay()) {
+		top->renderTop();
+		return;
+	}
 	C2D_TargetClear(target, ScreenManager::colorBackground());
 	C2D_SceneBegin(target);
 
@@ -3136,6 +3232,10 @@ void MessageScreen::renderTop(C3D_RenderTarget *target) {
 }
 
 void MessageScreen::renderBottom(C3D_RenderTarget *target) {
+	if (Overlay *top = topOverlay()) {
+		top->renderBottom();
+		return;
+	}
 	C2D_DrawRectSolid(0, 0, 0.0f, 320, 240, ScreenManager::colorBackgroundDark());
 
 	if (bottomMode == BottomScreenMode::EMOJI_PICKER) {
@@ -3256,7 +3356,11 @@ void MessageScreen::renderBottom(C3D_RenderTarget *target) {
 			if (canSend) {
 				hints += "\uE003: " + TR("common.type") + "  ";
 			}
-			hints += "\uE002: " + TR("common.menu") + "  \uE001: " + TR("common.back");
+			hints += "\uE002: " + TR("common.menu") + "  ";
+			if (canSend && !isHiddenChannel) {
+				hints += "R: " + TR("message.attach_short") + "  ";
+			}
+			hints += "\uE001: " + TR("common.back");
 		}
 		cachedHints = hints;
 	}
@@ -3303,6 +3407,7 @@ void MessageScreen::renderBottom(C3D_RenderTarget *target) {
 	}
 
 	renderReactionIcon();
+	renderUploadProgress();
 	VoiceControls::draw(VOICE_BTN_X, VOICE_BTN_Y);
 
 	if (VoicePopup::getInstance().isOpen()) {
@@ -3475,8 +3580,14 @@ void MessageScreen::showMessageOptions() {
 	} else {
 		// A takes over the message once it has controls, so reacting needs another way in.
 		const auto controls = selectedControls();
-		if (std::any_of(controls.begin(), controls.end(),
-		                [this](const Discord::MessageControl *control) { return canUseControl(*control); })) {
+		const bool hasVideo = std::any_of(msg.attachments.begin(), msg.attachments.end(),
+		                                  [](const Discord::Attachment &attach) { return isVideoAttachment(attach); }) ||
+		                      std::any_of(msg.embeds.begin(), msg.embeds.end(), [](const Discord::Embed &embed) {
+			                      return embed.type != "gifv" && !embedVideoUrl(embed).empty();
+		                      });
+		if (hasVideo || std::any_of(controls.begin(), controls.end(), [this](const Discord::MessageControl *control) {
+			    return canUseControl(*control);
+		    })) {
 			addOption("React", "message.menu.react");
 		}
 
@@ -3491,6 +3602,28 @@ void MessageScreen::showMessageOptions() {
 		if (isMine || client.canManageMessages(channelId)) {
 			addOption("Delete", "message.menu.delete");
 		}
+	}
+
+	bool playable = false;
+	bool saveable = false;
+	for (const auto &attach : msg.attachments) {
+		playable = playable || isVideoAttachment(attach);
+		saveable = saveable || hasRemoteFile(attach);
+	}
+	for (const auto &embed : msg.embeds) {
+		if (!embedVideoUrl(embed).empty()) {
+			playable = true;
+			saveable = true;
+		}
+	}
+	if (playable) {
+		addOption("Play", "message.menu.play_video");
+	}
+	if (saveable) {
+		addOption("Save", "message.menu.save");
+	}
+	if (canSend && canAttach()) {
+		addOption("Attach", "message.menu.attach");
 	}
 
 	bool hasFailed = false;
@@ -3820,7 +3953,7 @@ void MessageScreen::buildMessageCache(const Discord::Message &msg, MessageRender
 	}
 
 	for (const auto &attach : msg.attachments) {
-		if (isImageAttachment(attach)) {
+		if (isVisualAttachment(attach)) {
 			cache.dependsOnImages = true;
 			break;
 		}
@@ -4321,6 +4454,10 @@ void MessageScreen::renderReactionIcon() {
 		                iconSize / tex->width, iconSize / tex->height);
 	}
 
+	if (canAttach()) {
+		renderAttachButton(attachButtonX(isScrollBtnVisible), btnY);
+	}
+
 	if (!isCallableChannel() || isCallActive()) {
 		return;
 	}
@@ -4526,6 +4663,284 @@ void MessageScreen::catchUpMessages() {
 			    }
 		    }
 	    });
+}
+
+// ---- Attachments, GIFs and video ----
+
+void MessageScreen::pushOverlay(std::unique_ptr<Overlay> next) {
+	if (next) {
+		overlays.push_back(std::move(next));
+	}
+	Utils::requestRedraw();
+}
+
+bool MessageScreen::updateOverlay() {
+	if (overlays.empty()) {
+		return false;
+	}
+	// The pointer stays valid if the update pushes another overlay; only the vector's slots move.
+	Overlay *top = overlays.back().get();
+	top->update(hidKeysDown(), hidKeysHeld());
+	overlays.erase(std::remove_if(overlays.begin(), overlays.end(),
+	                              [](const std::unique_ptr<Overlay> &o) { return o->finished(); }),
+	               overlays.end());
+	Utils::requestRedraw();
+	return true;
+}
+
+bool MessageScreen::canAttach() { return !isForumView && !isHiddenChannel && !isLoading && canSendCached; }
+
+float MessageScreen::attachButtonX(bool scrollVisible) const {
+	const float btnW = 30.0f;
+	const float btnX = 320.0f - btnW - 10.0f;
+	const float reactBtnX = scrollVisible ? (btnX - btnW - 8.0f) : btnX;
+	float x = reactBtnX - btnW - 8.0f;
+	if (isCallableChannel() && !isCallActive()) {
+		x -= btnW + 8.0f;
+	}
+	return x;
+}
+
+void MessageScreen::renderAttachButton(float x, float y) {
+	const float size = 30.0f;
+	drawRoundedRect(x, y, 0.54f, size, size, 8.0f, ScreenManager::colorBackgroundLight());
+	const u32 color = ScreenManager::colorText();
+	C2D_DrawRectSolid(x + size / 2.0f - 1.0f, y + 8.0f, 0.55f, 2.0f, size - 16.0f, color);
+	C2D_DrawRectSolid(x + 8.0f, y + size / 2.0f - 1.0f, 0.55f, size - 16.0f, 2.0f, color);
+}
+
+void MessageScreen::renderUploadProgress() {
+	std::vector<ActiveUpload> active;
+	{
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		active = uploads;
+	}
+	if (active.empty()) {
+		return;
+	}
+	const ActiveUpload &upload = active.front();
+	const int64_t done = upload.progress ? upload.progress->done.load() : 0;
+	const int64_t total = upload.progress ? upload.progress->total.load() : 0;
+	const float fraction = total > 0 ? (float)done / total : 0.0f;
+
+	const float y = 150.0f;
+	drawRoundedRect(8.0f, y, 0.5f, 304.0f, 38.0f, 8.0f, ScreenManager::colorBackgroundLight());
+	std::string label = Core::I18n::format(TR("upload.uploading"), upload.name);
+	if (active.size() > 1) {
+		label += " (+" + std::to_string(active.size() - 1) + ")";
+	}
+	const std::string percent = std::to_string((int)(fraction * 100.0f)) + "%";
+	drawText(16.0f, y + 4.0f, 0.55f, 0.4f, 0.4f, ScreenManager::colorText(),
+	         getTruncatedText(label, 240.0f, 0.4f, 0.4f));
+	drawText(304.0f - measureText(percent, 0.4f, 0.4f), y + 4.0f, 0.55f, 0.4f, 0.4f,
+	         ScreenManager::colorTextMuted(), percent);
+	drawProgressBar(16.0f, y + 24.0f, 288.0f, 6.0f, fraction, 0.55f);
+}
+
+void MessageScreen::showAttachMenu() {
+	if (!canAttach()) {
+		return;
+	}
+	menuOptions.clear();
+	menuActions.clear();
+	auto addOption = [&](const std::string &actionId, const std::string &key) {
+		menuActions.push_back(actionId);
+		menuOptions.push_back(TR(key));
+	};
+	addOption("AttachFile", "attach.file");
+	addOption("AttachGif", "attach.gif");
+	addOption("AttachCamera", "attach.camera");
+	addOption("Cancel", "message.menu.cancel");
+	isMenuOpen = true;
+	menuIndex = 0;
+}
+
+void MessageScreen::openFileBrowser() {
+	pushOverlay(std::make_unique<FileBrowser>([this](const std::string &path) { openUploadConfirm(path, false); }));
+}
+
+void MessageScreen::openUploadConfirm(const std::string &path, bool fromCamera) {
+	const long long limit = Discord::DiscordClient::getInstance().getUploadLimitBytes();
+	pushOverlay(std::make_unique<UploadConfirm>(
+	    path, limit, pendingCaption,
+	    [this](const UploadChoice &choice) {
+		    pendingCaption.clear();
+		    startUpload(choice);
+	    },
+	    [this, fromCamera]() {
+		    if (fromCamera) {
+			    openCamera();
+		    } else {
+			    openFileBrowser();
+		    }
+	    },
+	    [this](const std::string &file) { playVideo("", file, Utils::File::baseName(file), "", false); }));
+}
+
+void MessageScreen::openCamera() {
+	pushOverlay(std::make_unique<CameraCapture>([this](const std::string &path) { openUploadConfirm(path, true); }));
+}
+
+void MessageScreen::openGifPicker() {
+	pushOverlay(std::make_unique<GifPicker>(
+	    [this](const Discord::FavoriteGif &gif) { sendText(gif.url); },
+	    [this](const Discord::FavoriteGif &gif) {
+		    const std::string name = Utils::File::baseName(gif.src.substr(0, gif.src.find('?')));
+		    playVideo(gif.src, "", name, name, true);
+	    }));
+}
+
+void MessageScreen::sendText(const std::string &content) {
+	if (content.empty()) {
+		return;
+	}
+	Discord::Message optimisticMsg = createOptimisticMessage(content);
+	{
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		this->messages.push_back(optimisticMsg);
+		rebuildLayoutCache();
+		scrollToBottom();
+	}
+	Discord::DiscordClient::getInstance().sendMessage(
+	    channelId, content,
+	    [this, token = aliveToken, pendingId = optimisticMsg.id](const Discord::Message &sentMsg, bool success,
+	                                                             int errorCode) {
+		    if (!*token) {
+			    return;
+		    }
+		    this->handleMessageSendResult(pendingId, sentMsg, success, errorCode);
+	    },
+	    optimisticMsg.nonce);
+}
+
+void MessageScreen::startUpload(const UploadChoice &choice) {
+	const std::string name = Utils::File::baseName(choice.path);
+	Discord::Message pending = createOptimisticMessage(choice.caption);
+	Discord::Attachment attach;
+	attach.filename = (choice.spoiler ? "SPOILER_" : "") + name;
+	attach.size = (int)std::max(0LL, Utils::File::fileSize(choice.path));
+	attach.content_type = Utils::File::mimeType(choice.path);
+	attach.spoiler = choice.spoiler;
+	pending.attachments.push_back(attach);
+
+	auto progress = std::make_shared<Network::TransferProgress>();
+	{
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		this->messages.push_back(pending);
+		uploads.push_back({pending.id, name, progress});
+		rebuildLayoutCache();
+		scrollToBottom();
+	}
+
+	Discord::UploadRequest request;
+	request.channelId = channelId;
+	request.path = choice.path;
+	request.caption = choice.caption;
+	request.spoiler = choice.spoiler;
+	request.nonce = pending.nonce;
+	Discord::DiscordClient::getInstance().uploadFile(
+	    request, progress,
+	    [this, token = aliveToken, pendingId = pending.id](const Discord::Message &sentMsg, bool success,
+	                                                       int errorCode) {
+		    if (!*token) {
+			    return;
+		    }
+		    {
+			    std::lock_guard<std::recursive_mutex> lock(messageMutex);
+			    if (!*token) {
+				    return;
+			    }
+			    uploads.erase(std::remove_if(uploads.begin(), uploads.end(),
+			                                 [&](const ActiveUpload &u) { return u.pendingId == pendingId; }),
+			                  uploads.end());
+			    if (!success) {
+				    pendingToastText = errorCode == 413   ? TR("upload.too_large_server")
+				                       : errorCode == 403 ? TR("message.no_permission")
+				                                          : TR("upload.failed");
+			    }
+		    }
+		    this->handleMessageSendResult(pendingId, sentMsg, success, errorCode);
+	    });
+}
+
+void MessageScreen::playVideo(const std::string &url, const std::string &localPath, const std::string &title,
+                              const std::string &fileName, bool loop) {
+	VideoPlayer::Source source;
+	source.url = url;
+	source.localPath = localPath;
+	source.title = title;
+	source.fileName = fileName;
+	source.loop = loop;
+	pushOverlay(std::make_unique<VideoPlayer>(source));
+}
+
+bool MessageScreen::playSelectedVideo(bool includeGifs) {
+	if (selectedIndex < 0 || selectedIndex >= (int)messages.size()) {
+		return false;
+	}
+	const Discord::Message &msg = messages[selectedIndex];
+	for (const auto &attach : msg.attachments) {
+		if (isVideoAttachment(attach)) {
+			playVideo(attach.url.empty() ? attach.proxy_url : attach.url, "", attach.filename, attach.filename, false);
+			return true;
+		}
+	}
+	for (const auto &embed : msg.embeds) {
+		const std::string url = embedVideoUrl(embed);
+		const bool gif = embed.type == "gifv";
+		if (url.empty() || (gif && !includeGifs)) {
+			continue;
+		}
+		std::string name = Utils::File::baseName(url.substr(0, url.find('?')));
+		const std::string title = embed.title.empty() ? (embed.provider_name.empty() ? name : embed.provider_name)
+		                                              : embed.title;
+		playVideo(url, "", title, name, gif);
+		return true;
+	}
+	return false;
+}
+
+void MessageScreen::saveSelectedAttachments() {
+	if (selectedIndex < 0 || selectedIndex >= (int)messages.size()) {
+		return;
+	}
+	const Discord::Message &msg = messages[selectedIndex];
+	std::vector<std::pair<std::string, std::string>> files;
+	for (const auto &attach : msg.attachments) {
+		if (hasRemoteFile(attach)) {
+			files.emplace_back(attach.url.empty() ? attach.proxy_url : attach.url, attach.filename);
+		}
+	}
+	for (const auto &embed : msg.embeds) {
+		const std::string url = embedVideoUrl(embed);
+		if (!url.empty()) {
+			files.emplace_back(url, Utils::File::baseName(url.substr(0, url.find('?'))));
+		}
+	}
+	if (files.empty()) {
+		return;
+	}
+
+	const std::string dir = std::string(CONFIG_DIR_PATH) + "/downloads";
+	Utils::File::ensureDirectory(dir);
+	ScreenManager::getInstance().showToast(TR("save.started"));
+	for (const auto &file : files) {
+		const std::string target = Utils::File::uniquePath(dir, file.second.empty() ? "file" : file.second);
+		Network::downloadFile(
+		    file.first, target, nullptr,
+		    [this, token = aliveToken, target](bool success, long, const std::string &) {
+			    if (!*token) {
+				    return;
+			    }
+			    std::lock_guard<std::recursive_mutex> lock(messageMutex);
+			    if (!*token) {
+				    return;
+			    }
+			    pendingToastText =
+			        success ? Core::I18n::format(TR("save.done"), target) : TR("save.failed");
+		    },
+		    {}, Network::RequestPriority::BACKGROUND);
+	}
 }
 
 } // namespace UI

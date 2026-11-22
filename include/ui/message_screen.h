@@ -5,6 +5,7 @@
 #include "ui/screen_manager.h"
 #include "ui/emoji_picker.h"
 #include "ui/markdown_renderer.h"
+#include "ui/overlay.h"
 #include <memory>
 #include <mutex>
 #include <set>
@@ -13,7 +14,13 @@
 #include <utility>
 #include <vector>
 
+namespace Network {
+struct TransferProgress;
+}
+
 namespace UI {
+
+struct UploadChoice;
 
 class MessageScreen : public Screen {
   public:
@@ -183,6 +190,39 @@ class MessageScreen : public Screen {
 	std::shared_ptr<bool> aliveToken;
 	enum class BottomScreenMode { TOPIC, EMOJI_PICKER };
 	BottomScreenMode bottomMode;
+
+	// The file browser, GIF picker, camera or video player, when one is open. The top one takes over both
+	// screens; the ones under it wait, so closing a video started from the GIF picker goes back to the picker.
+	std::vector<std::unique_ptr<Overlay>> overlays;
+	void pushOverlay(std::unique_ptr<Overlay> next);
+	bool updateOverlay();
+	Overlay *topOverlay() const { return overlays.empty() ? nullptr : overlays.back().get(); }
+	// Shown from update(), since toasts are not safe to raise from network threads.
+	std::string pendingToastText;
+
+	struct ActiveUpload {
+		std::string pendingId;
+		std::string name;
+		std::shared_ptr<Network::TransferProgress> progress;
+	};
+	std::vector<ActiveUpload> uploads;
+	std::string pendingCaption;
+
+	void showAttachMenu();
+	bool canAttach();
+	void openFileBrowser();
+	void openUploadConfirm(const std::string &path, bool fromCamera);
+	void openCamera();
+	void openGifPicker();
+	void startUpload(const UploadChoice &choice);
+	void sendText(const std::string &content);
+	void playVideo(const std::string &url, const std::string &localPath, const std::string &title,
+	               const std::string &fileName, bool loop);
+	bool playSelectedVideo(bool includeGifs);
+	void saveSelectedAttachments();
+	void renderUploadProgress();
+	void renderAttachButton(float x, float y);
+	float attachButtonX(bool scrollVisible) const;
 
 	std::unique_ptr<EmojiPicker> emojiPicker;
 
