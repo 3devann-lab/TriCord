@@ -1716,6 +1716,8 @@ void DiscordClient::applyReady(ReadyData &ready, rapidjson::Document &voiceState
 	Config::getInstance().updateCurrentAccountName(currentUser.username);
 
 	setState(ConnectionState::READY, "Ready! Logged in as " + currentUser.username);
+	// Loaded once in the background, so message menus know who is already a friend.
+	fetchRelationships();
 }
 
 void DiscordClient::applyGuildCreate(Guild &guild, rapidjson::Document &voiceStates) {
@@ -5017,6 +5019,359 @@ bool DiscordClient::canManageMessages(const std::string &channelId) {
 	return false;
 }
 
+namespace {
+
+// Discord's error body: {"message": "...", "code": 50013, "errors": {...}}.
+std::string errorMessage(const Network::HttpResponse &resp) {
+	if (resp.statusCode == 0) {
+		return resp.error;
+	}
+	rapidjson::Document doc;
+	doc.Parse(resp.body.c_str());
+	if (!doc.HasParseError() && doc.IsObject()) {
+		std::string message = Utils::Json::getString(doc, "message");
+		if (!message.empty()) {
+			return message;
+		}
+	}
+	return "HTTP " + std::to_string(resp.statusCode);
+}
+
+constexpr const char *CONTEXT_ADD_FRIEND = "eyJsb2NhdGlvbiI6IkFkZCBGcmllbmQifQ==";      // {"location":"Add Friend"}
+constexpr const char *CONTEXT_FRIENDS = "eyJsb2NhdGlvbiI6IkZyaWVuZHMifQ==";             // {"location":"Friends"}
+constexpr const char *CONTEXT_MENU = "eyJsb2NhdGlvbiI6IkNvbnRleHRNZW51In0=";            // {"location":"ContextMenu"}
+
+} // namespace
+
+void DiscordClient::fetchRelationships(RelationshipsCallback cb) {
+	if (token.empty()) {
+		if (cb) {
+			cb(false, {});
+		}
+		return;
+	}
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/relationships", "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [this, cb](Network::HttpResponse &resp) {
+		    std::vector<Relationship> list;
+		    rapidjson::Document doc;
+		    if (resp.success) {
+			    doc.Parse(resp.body.c_str());
+		    }
+		    if (!resp.success || doc.HasParseError() || !doc.IsArray()) {
+			    Logger::log("[Friends] Relationships request failed: %d", (int)resp.statusCode);
+			    if (cb) {
+				    cb(false, list);
+			    }
+			    return;
+		    }
+		    for (const auto &entry : doc.GetArray()) {
+			    if (!entry.IsObject()) {
+				    continue;
+			    }
+			    Relationship rel;
+			    rel.id = Utils::Json::getString(entry, "id");
+			    rel.type = Utils::Json::getInt(entry, "type");
+			    rel.nickname = Utils::Json::getString(entry, "nickname");
+			    if (entry.HasMember("user") && entry["user"].IsObject()) {
+				    rel.user = parseUserObject(entry["user"]);
+			    }
+			    if (rel.user.id.empty()) {
+				    rel.user.id = rel.id;
+			    }
+			    list.push_back(std::move(rel));
+		    }
+		    {
+			    std::lock_guard<std::recursive_mutex> lock(clientMutex);
+			    relationships = list;
+			    relationshipsLoaded = true;
+		    }
+		    if (cb) {
+			    cb(true, list);
+		    }
+	    },
+	    {{"Authorization", token}});
+}
+
+std::vector<Relationship> DiscordClient::getRelationships() {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	return relationships;
+}
+
+int DiscordClient::getRelationshipType(const std::string &userId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	for (const auto &rel : relationships) {
+		if (rel.id == userId) {
+			return rel.type;
+		}
+	}
+	return 0;
+}
+
+void DiscordClient::sendFriendRequest(const std::string &username, ActionCallback cb) {
+	std::string name = username;
+	// Legacy tags still work as name#1234.
+	std::string discriminator;
+	const size_t hash = name.rfind('#');
+	if (hash != std::string::npos && name.size() - hash == 5) {
+		discriminator = name.substr(hash + 1);
+		name = name.substr(0, hash);
+	}
+	if (!name.empty() && name[0] == '@') {
+		name = name.substr(1);
+	}
+
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+	writer.StartObject();
+	writer.Key("username");
+	writer.String(name.c_str());
+	writer.Key("discriminator");
+	if (discriminator.empty()) {
+		writer.Null();
+	} else {
+		writer.Int(atoi(discriminator.c_str()));
+	}
+	writer.EndObject();
+
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/relationships", "POST", s.GetString(),
+	    Network::RequestPriority::INTERACTIVE,
+	    [this, cb](Network::HttpResponse &resp) {
+		    if (resp.success) {
+			    fetchRelationships();
+		    }
+		    if (cb) {
+			    cb(resp.success, resp.success ? "" : errorMessage(resp));
+		    }
+	    },
+	    {{"Authorization", token}, {"X-Context-Properties", CONTEXT_ADD_FRIEND}});
+}
+
+void DiscordClient::addFriend(const std::string &userId, ActionCallback cb) {
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/relationships/" + userId, "PUT", "{}",
+	    Network::RequestPriority::INTERACTIVE,
+	    [this, cb](Network::HttpResponse &resp) {
+		    if (resp.success) {
+			    fetchRelationships();
+		    }
+		    if (cb) {
+			    cb(resp.success, resp.success ? "" : errorMessage(resp));
+		    }
+	    },
+	    {{"Authorization", token}, {"X-Context-Properties", CONTEXT_MENU}});
+}
+
+void DiscordClient::removeRelationship(const std::string &userId, ActionCallback cb) {
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/relationships/" + userId, "DELETE", "",
+	    Network::RequestPriority::INTERACTIVE,
+	    [this, cb, userId](Network::HttpResponse &resp) {
+		    if (resp.success) {
+			    std::lock_guard<std::recursive_mutex> lock(clientMutex);
+			    relationships.erase(std::remove_if(relationships.begin(), relationships.end(),
+			                                       [&](const Relationship &r) { return r.id == userId; }),
+			                        relationships.end());
+		    }
+		    if (cb) {
+			    cb(resp.success, resp.success ? "" : errorMessage(resp));
+		    }
+	    },
+	    {{"Authorization", token}, {"X-Context-Properties", CONTEXT_FRIENDS}});
+}
+
+void DiscordClient::openDirectMessage(const std::string &userId, ChannelCallback cb) {
+	{
+		std::lock_guard<std::recursive_mutex> lock(clientMutex);
+		for (const auto &ch : privateChannels) {
+			if (ch.type == 1 && !ch.recipients.empty() && ch.recipients[0].id == userId) {
+				if (cb) {
+					cb(ch.id);
+				}
+				return;
+			}
+		}
+	}
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+	writer.StartObject();
+	writer.Key("recipients");
+	writer.StartArray();
+	writer.String(userId.c_str());
+	writer.EndArray();
+	writer.EndObject();
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/channels", "POST", s.GetString(), Network::RequestPriority::INTERACTIVE,
+	    [this, cb](Network::HttpResponse &resp) {
+		    rapidjson::Document doc;
+		    if (resp.success) {
+			    doc.Parse(resp.body.c_str());
+		    }
+		    if (!resp.success || doc.HasParseError() || !doc.IsObject()) {
+			    if (cb) {
+				    cb("");
+			    }
+			    return;
+		    }
+		    Channel channel;
+		    parseChannelObject(doc, channel);
+		    {
+			    std::lock_guard<std::recursive_mutex> lock(clientMutex);
+			    bool known = false;
+			    for (const auto &ch : privateChannels) {
+				    known = known || ch.id == channel.id;
+			    }
+			    if (!known && !channel.id.empty()) {
+				    privateChannels.insert(privateChannels.begin(), channel);
+				    privateChannelsDirty = true;
+			    }
+		    }
+		    if (cb) {
+			    cb(channel.id);
+		    }
+	    },
+	    {{"Authorization", token}, {"X-Context-Properties", CONTEXT_MENU}});
+}
+
+bool DiscordClient::canManageChannel(const std::string &channelId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	const std::string guildId = getGuildIdFromChannel(channelId);
+	if (guildId.empty() || guildId == "DM") {
+		return false;
+	}
+	for (const auto &guild : guilds) {
+		if (guild.id != guildId) {
+			continue;
+		}
+		for (const auto &channel : guild.channels) {
+			if (channel.id == channelId) {
+				const uint64_t perms = computeChannelPermissions(guild, channel, currentUser.id, guild.myRoles);
+				return (perms & (Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR)) != 0;
+			}
+		}
+	}
+	return false;
+}
+
+bool DiscordClient::canManageGuildChannels(const std::string &guildId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	for (const auto &guild : guilds) {
+		if (guild.id == guildId) {
+			const uint64_t perms = calcBasePermissions(guild, currentUser.id, guild.myRoles);
+			return (perms & (Permissions::MANAGE_CHANNELS | Permissions::ADMINISTRATOR)) != 0;
+		}
+	}
+	return false;
+}
+
+void DiscordClient::editChannel(const std::string &channelId, const ChannelEdit &edit, ActionCallback cb) {
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+	writer.StartObject();
+	writer.Key("name");
+	writer.String(edit.name.c_str());
+	writer.Key("topic");
+	writer.String(edit.topic.c_str());
+	writer.Key("rate_limit_per_user");
+	writer.Int(edit.slowmode);
+	writer.Key("nsfw");
+	writer.Bool(edit.nsfw);
+	writer.EndObject();
+
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/channels/" + channelId, "PATCH", s.GetString(),
+	    Network::RequestPriority::INTERACTIVE,
+	    [this, cb, channelId](Network::HttpResponse &resp) {
+		    if (resp.success) {
+			    rapidjson::Document doc;
+			    doc.Parse(resp.body.c_str());
+			    if (!doc.HasParseError() && doc.IsObject()) {
+				    std::lock_guard<std::recursive_mutex> lock(clientMutex);
+				    for (auto &guild : guilds) {
+					    for (auto &channel : guild.channels) {
+						    if (channel.id == channelId) {
+							    channel.name = Utils::Json::getString(doc, "name");
+							    channel.topic = Utils::Json::getString(doc, "topic");
+							    channel.rate_limit_per_user = Utils::Json::getInt(doc, "rate_limit_per_user");
+							    channel.nsfw = Utils::Json::getBool(doc, "nsfw");
+						    }
+					    }
+				    }
+				    guildDataDirty = true;
+			    }
+		    }
+		    if (cb) {
+			    cb(resp.success, resp.success ? "" : errorMessage(resp));
+		    }
+	    },
+	    {{"Authorization", token}});
+}
+
+void DiscordClient::applyChannelPositions(const std::string &guildId, const std::vector<ChannelPosition> &positions) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	Guild *guild = findGuildLocked(guildId);
+	if (!guild) {
+		return;
+	}
+	for (const auto &pos : positions) {
+		for (auto &channel : guild->channels) {
+			if (channel.id == pos.id) {
+				channel.position = pos.position;
+				if (pos.setParent) {
+					channel.parent_id = pos.parentId;
+				}
+			}
+		}
+	}
+	guildDataDirty = true;
+}
+
+void DiscordClient::reorderChannels(const std::string &guildId, const std::vector<ChannelPosition> &positions,
+                                    ActionCallback cb) {
+	if (positions.empty()) {
+		if (cb) {
+			cb(true, "");
+		}
+		return;
+	}
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+	writer.StartArray();
+	for (const auto &pos : positions) {
+		writer.StartObject();
+		writer.Key("id");
+		writer.String(pos.id.c_str());
+		writer.Key("position");
+		writer.Int(pos.position);
+		if (pos.setParent) {
+			writer.Key("parent_id");
+			if (pos.parentId.empty()) {
+				writer.Null();
+			} else {
+				writer.String(pos.parentId.c_str());
+			}
+			writer.Key("lock_permissions");
+			writer.Bool(false);
+		}
+		writer.EndObject();
+	}
+	writer.EndArray();
+
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/guilds/" + guildId + "/channels", "PATCH", s.GetString(),
+	    Network::RequestPriority::INTERACTIVE,
+	    [this, cb, guildId, positions](Network::HttpResponse &resp) {
+		    if (resp.success) {
+			    applyChannelPositions(guildId, positions);
+		    }
+		    if (cb) {
+			    cb(resp.success, resp.success ? "" : errorMessage(resp));
+		    }
+	    },
+	    {{"Authorization", token}});
+}
+
 void DiscordClient::parseChannelObject(const rapidjson::Value &cObj, Channel &channel) {
 	channel.id = Utils::Json::getString(cObj, "id");
 	channel.name = Utils::Json::getString(cObj, "name");
@@ -5026,6 +5381,8 @@ void DiscordClient::parseChannelObject(const rapidjson::Value &cObj, Channel &ch
 	channel.position = Utils::Json::getInt(cObj, "position");
 	channel.topic = Utils::Json::getString(cObj, "topic");
 	channel.flags = Utils::Json::getInt(cObj, "flags");
+	channel.rate_limit_per_user = Utils::Json::getInt(cObj, "rate_limit_per_user");
+	channel.nsfw = Utils::Json::getBool(cObj, "nsfw");
 
 	if (cObj.HasMember("permission_overwrites") && cObj["permission_overwrites"].IsArray()) {
 		parseOverwrites(cObj["permission_overwrites"], channel.permission_overwrites);

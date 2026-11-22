@@ -24,7 +24,8 @@ enum class ScreenType {
 	SETTINGS,
 	ABOUT,
 	DISCLAIMER,
-	THEME_MANAGER
+	THEME_MANAGER,
+	FRIENDS
 };
 
 class Screen {

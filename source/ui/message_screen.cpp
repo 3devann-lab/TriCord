@@ -650,6 +650,13 @@ void MessageScreen::update() {
 		ScreenManager::getInstance().showToast(pendingToastText);
 		pendingToastText.clear();
 	}
+	if (!pendingDmChannel.empty()) {
+		const std::string dm = pendingDmChannel;
+		pendingDmChannel.clear();
+		client.setSelectedChannelId(dm);
+		ScreenManager::getInstance().pushScreen(ScreenType::MESSAGES);
+		return;
+	}
 
 	u32 kDown = hidKeysDown();
 	u32 kHeld = hidKeysHeld();
@@ -684,7 +691,7 @@ void MessageScreen::update() {
 
 			const float SCREEN_HEIGHT = 240.0f;
 			float maxScroll = std::max(0.0f, totalContentHeight - SCREEN_HEIGHT);
-			bool isScrollBtnVisible = (targetScrollY < maxScroll - 10.0f);
+			bool isScrollBtnVisible = viewingHistory || (targetScrollY < maxScroll - 10.0f);
 
 			bool handled = false;
 			if (!isMenuOpen && !isLoading) {
@@ -696,7 +703,11 @@ void MessageScreen::update() {
 				};
 
 				if (isScrollBtnVisible && isTouched(btnX, btnY, btnW, btnH)) {
-					scrollToBottom();
+					if (viewingHistory) {
+						jumpToPresent();
+					} else {
+						scrollToBottom();
+					}
 					handled = true;
 				} else if (canAttach() && isTouched(attachButtonX(isScrollBtnVisible), btnY, btnW, btnH)) {
 					showAttachMenu();
@@ -855,6 +866,45 @@ void MessageScreen::update() {
 				saveSelectedAttachments();
 			} else if (action == "ViewImage") {
 				viewSelectedImages();
+			} else if (action == "JumpReply") {
+				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
+					jumpToMessage(messages[selectedIndex].referencedMessageId);
+				}
+			} else if (action == "JumpPresent") {
+				jumpToPresent();
+			} else if (action == "AddFriend" || action == "RemoveFriend") {
+				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
+					const std::string userId = messages[selectedIndex].author.id;
+					const bool adding = action == "AddFriend";
+					auto done = [this, token = aliveToken, adding](bool ok, const std::string &message) {
+						if (!*token) {
+							return;
+						}
+						std::lock_guard<std::recursive_mutex> lock(messageMutex);
+						pendingToastText = ok ? TR(adding ? "friends.request_sent_short" : "friends.removed")
+						                      : Core::I18n::format(TR("friends.action_failed"), message);
+					};
+					if (adding) {
+						client.addFriend(userId, done);
+					} else {
+						client.removeRelationship(userId, done);
+					}
+				}
+			} else if (action == "SendDM") {
+				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
+					client.openDirectMessage(messages[selectedIndex].author.id,
+					                         [this, token = aliveToken](const std::string &dmId) {
+						                         if (!*token) {
+							                         return;
+						                         }
+						                         std::lock_guard<std::recursive_mutex> lock(messageMutex);
+						                         if (dmId.empty()) {
+							                         pendingToastText = TR("friends.dm_failed");
+						                         } else {
+							                         pendingDmChannel = dmId;
+						                         }
+					                         });
+				}
 			} else if (action == "ToggleSpoiler") {
 				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
 					const std::string &id = messages[selectedIndex].id;
@@ -1189,7 +1239,7 @@ void MessageScreen::update() {
 	if (!isLoading && !isForumView && !messages.empty()) {
 		const float SCREEN_HEIGHT = 240.0f;
 		float maxScroll = std::max(0.0f, totalContentHeight - SCREEN_HEIGHT);
-		bool atBottom = (targetScrollY >= maxScroll - 5.0f);
+		bool atBottom = (targetScrollY >= maxScroll - 5.0f) && !viewingHistory;
 		if (atBottom) {
 			checkAndMarkChannelRead();
 		}
@@ -3393,7 +3443,7 @@ void MessageScreen::renderBottom(C3D_RenderTarget *target) {
 	const float SCREEN_HEIGHT = 240.0f;
 	float maxScroll = std::max(0.0f, totalContentHeight - SCREEN_HEIGHT);
 
-	if (targetScrollY < maxScroll - 10.0f) {
+	if (viewingHistory || targetScrollY < maxScroll - 10.0f) {
 		float btnW = 30.0f;
 		float btnH = 30.0f;
 		float btnX = 320.0f - btnW - 10.0f;
@@ -3619,6 +3669,25 @@ void MessageScreen::showMessageOptions() {
 			saveable = true;
 		}
 	}
+	if (!msg.referencedMessageId.empty() && msg.type == 19) {
+		addOption("JumpReply", "message.menu.jump_reply");
+	}
+	if (!isMine && !msg.author.bot && !msg.author.id.empty() && !msg.isEphemeral()) {
+		const int relation = client.getRelationshipType(msg.author.id);
+		if (channelType != 1) {
+			addOption("SendDM", "message.menu.send_dm");
+		}
+		if (relation == Discord::RelationshipType::FRIEND) {
+			addOption("RemoveFriend", "message.menu.remove_friend");
+		} else if (relation == Discord::RelationshipType::INCOMING) {
+			addOption("AddFriend", "message.menu.accept_friend");
+		} else if (relation != Discord::RelationshipType::OUTGOING && relation != Discord::RelationshipType::BLOCKED) {
+			addOption("AddFriend", "message.menu.add_friend");
+		}
+	}
+	if (viewingHistory) {
+		addOption("JumpPresent", "message.menu.jump_present");
+	}
 	const bool hasImage =
 	    std::any_of(msg.attachments.begin(), msg.attachments.end(),
 	                [](const Discord::Attachment &attach) { return isImageAttachment(attach); }) ||
@@ -3782,6 +3851,12 @@ void MessageScreen::onMessageCreate(const Discord::Message &msg) {
 			found = true;
 			break;
 		}
+	}
+	if (!found && viewingHistory) {
+		// The loaded slice is from the past; appending would leave a gap before the new message.
+		showNewMessageIndicator = true;
+		newMessageCount++;
+		return;
 	}
 	if (!found) {
 		this->messages.push_back(msg);
@@ -4448,7 +4523,7 @@ void MessageScreen::renderReactionIcon() {
 
 	const float SCREEN_HEIGHT = 240.0f;
 	float maxScroll = std::max(0.0f, totalContentHeight - SCREEN_HEIGHT);
-	bool isScrollBtnVisible = (targetScrollY < maxScroll - 10.0f);
+	bool isScrollBtnVisible = viewingHistory || (targetScrollY < maxScroll - 10.0f);
 
 	float reactBtnX = isScrollBtnVisible ? (btnX - btnW - 8.0f) : btnX;
 
@@ -4976,6 +5051,93 @@ void MessageScreen::viewSelectedImages() {
 	if (!images.empty()) {
 		pushOverlay(std::make_unique<ImageViewer>(std::move(images), 0));
 	}
+}
+
+void MessageScreen::centerOnSelection() {
+	if (selectedIndex < 0 || selectedIndex >= (int)messagePositions.size()) {
+		return;
+	}
+	const float msgY = messagePositions[selectedIndex];
+	const float msgH = messageHeights[selectedIndex];
+	const float maxScroll = std::max(0.0f, totalContentHeight - 240.0f);
+	targetScrollY = std::clamp(msgY - std::max(20.0f, (240.0f - msgH) / 2.0f), 0.0f, maxScroll);
+	currentScrollY = targetScrollY;
+	Utils::requestRedraw();
+}
+
+void MessageScreen::jumpToMessage(const std::string &messageId) {
+	if (messageId.empty()) {
+		return;
+	}
+	{
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		for (size_t i = 0; i < messages.size(); i++) {
+			if (messages[i].id == messageId) {
+				selectedIndex = (int)i;
+				centerOnSelection();
+				return;
+			}
+		}
+	}
+
+	ScreenManager::getInstance().showToast(TR("message.jumping"));
+	Discord::DiscordClient::getInstance().fetchMessagesAsync(
+	    channelId, 50,
+	    [this, token = aliveToken, messageId](const std::vector<Discord::Message> &fetched) {
+		    if (!*token) {
+			    return;
+		    }
+		    std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		    if (!*token) {
+			    return;
+		    }
+		    int found = -1;
+		    for (size_t i = 0; i < fetched.size(); i++) {
+			    if (fetched[i].id == messageId) {
+				    found = (int)i;
+				    break;
+			    }
+		    }
+		    if (found < 0) {
+			    pendingToastText = TR("message.jump_failed");
+			    return;
+		    }
+		    replaceHistory(fetched);
+		    viewingHistory = true;
+		    hasMoreHistory = true;
+		    rebuildLayoutCache();
+		    for (size_t i = 0; i < messages.size(); i++) {
+			    if (messages[i].id == messageId) {
+				    selectedIndex = (int)i;
+				    break;
+			    }
+		    }
+		    centerOnSelection();
+	    },
+	    messageId);
+}
+
+void MessageScreen::jumpToPresent() {
+	Discord::DiscordClient::getInstance().fetchMessagesAsync(
+	    channelId, 50, [this, token = aliveToken](const std::vector<Discord::Message> &fetched) {
+		    if (!*token) {
+			    return;
+		    }
+		    std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		    if (!*token) {
+			    return;
+		    }
+		    replaceHistory(fetched);
+		    viewingHistory = false;
+		    hasMoreHistory = true;
+		    showNewMessageIndicator = false;
+		    newMessageCount = 0;
+		    rebuildLayoutCache();
+		    if (!messages.empty()) {
+			    selectedIndex = (int)messages.size() - 1;
+		    }
+		    scrollToBottom();
+	    });
 }
 
 } // namespace UI

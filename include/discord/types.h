@@ -22,6 +22,20 @@ struct User {
 	int premium_type = 0;
 };
 
+namespace RelationshipType {
+constexpr int FRIEND = 1;
+constexpr int BLOCKED = 2;
+constexpr int INCOMING = 3;
+constexpr int OUTGOING = 4;
+} // namespace RelationshipType
+
+struct Relationship {
+	std::string id;
+	int type = 0;
+	std::string nickname;
+	User user;
+};
+
 struct Overwrite {
 	std::string id;
 	int type = 0;
@@ -53,6 +67,8 @@ struct Channel {
 	std::string last_message_content;
 	std::string op_content;
 	bool is_archived = false;
+	int rate_limit_per_user = 0;
+	bool nsfw = false;
 
 	std::vector<struct Overwrite> permission_overwrites;
 	std::vector<User> recipients;
@@ -64,6 +80,8 @@ const uint64_t ADMINISTRATOR = 1ULL << 3;
 const uint64_t MANAGE_MESSAGES = 1ULL << 13;
 const uint64_t VIEW_CHANNEL = 1ULL << 10;
 const uint64_t SEND_MESSAGES = 1ULL << 11;
+const uint64_t MANAGE_CHANNELS = 1ULL << 4;
+const uint64_t USE_APPLICATION_COMMANDS = 1ULL << 31;
 } // namespace Permissions
 
 struct Role {

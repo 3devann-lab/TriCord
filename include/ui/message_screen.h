@@ -199,6 +199,7 @@ class MessageScreen : public Screen {
 	Overlay *topOverlay() const { return overlays.empty() ? nullptr : overlays.back().get(); }
 	// Shown from update(), since toasts are not safe to raise from network threads.
 	std::string pendingToastText;
+	std::string pendingDmChannel;
 
 	struct ActiveUpload {
 		std::string pendingId;
@@ -221,6 +222,12 @@ class MessageScreen : public Screen {
 	bool playSelectedVideo(bool includeGifs);
 	void saveSelectedAttachments();
 	void viewSelectedImages();
+
+	// Set while the loaded messages are a slice of the past, after jumping to an old reply.
+	bool viewingHistory = false;
+	void jumpToMessage(const std::string &messageId);
+	void jumpToPresent();
+	void centerOnSelection();
 	void renderUploadProgress();
 	void renderAttachButton(float x, float y);
 	float attachButtonX(bool scrollVisible) const;
