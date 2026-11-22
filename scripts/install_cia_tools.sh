@@ -43,7 +43,12 @@ is_host_binary() {
 	# Release archives often carry 32-bit, ARM, macOS and Windows builds next to the one we want,
 	# and a build linked against a newer glibc than this system's will not start.
 	file -L "$1" 2>/dev/null | grep -qi 'ELF.*x86-64' || return 1
-	! "$1" 2>&1 </dev/null | grep -qiE 'GLIBC_|error while loading shared libraries|cannot execute'
+	local output
+	output="$("$1" 2>&1 </dev/null || true)"
+	if grep -qiE 'GLIBC_|GLIBCXX_|error while loading shared libraries|cannot execute' <<<"${output}"; then
+		echo "$(basename "$1"): $(head -n1 <<<"${output}")" >&2
+		return 1
+	fi
 }
 
 # Unpacks archive $1 and installs the Linux x86_64 executable named $2 from it into DEST.

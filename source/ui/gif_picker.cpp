@@ -29,10 +29,13 @@ std::string shortLabel(const Discord::FavoriteGif &gif) {
 	const size_t view = url.find("/view/");
 	if (view != std::string::npos) {
 		std::string slug = url.substr(view + 6);
-		slug = slug.substr(0, slug.find('?'));
+		const size_t query = slug.find('?');
+		if (query != std::string::npos) {
+			slug.resize(query);
+		}
 		const size_t gifWord = slug.rfind("-gif-");
 		if (gifWord != std::string::npos) {
-			slug = slug.substr(0, gifWord);
+			slug.resize(gifWord);
 		}
 		std::replace(slug.begin(), slug.end(), '-', ' ');
 		if (!slug.empty()) {
