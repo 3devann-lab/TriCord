@@ -1,3 +1,4 @@
+#include "core/boot.h"
 #include "network/media_cache.h"
 #include "core/system_status.h"
 #include "core/config.h"
@@ -85,6 +86,8 @@ int main(int argc, char **argv) {
 	romfsInit();
 	psInit();
 
+	Core::Boot::begin();
+	Core::Boot::show("audio");
 	if (R_SUCCEEDED(ndspInit())) {
 		ndspSetOutputMode(NDSP_OUTPUT_MONO);
 		Utils::SoundPlayer::getInstance().init();
@@ -101,30 +104,63 @@ int main(int argc, char **argv) {
 	            (unsigned long)(linearSpaceFree() / 1024));
 	// mbedTLS gathers entropy through sslc and ignores the failure when sslc is not up, which
 	// would leave every TLS session keyed from stack contents.
+	Core::Boot::show("secure connections");
 	if (R_FAILED(sslcInit(0))) {
 		Logger::log("SSL service unavailable, TLS has no entropy");
 	}
 
+	Core::Boot::show("settings");
 	Config::getInstance().load();
+	if (Core::Boot::isSafeStart()) {
+		// Everything new that runs at startup, off until the user turns it back on.
+		Config &config = Config::getInstance();
+		config.setGoogleDnsEnabled(false);
+		config.setImageCacheEnabled(false);
+		config.setMessageCacheEnabled(false);
+		config.setIdleOnLidCloseEnabled(false);
+		config.setNotifyLedEnabled(false);
+		config.setHomeNotificationsEnabled(false);
+		config.setStatusBarEnabled(false);
+	}
 	Network::Dns::setEnabled(Config::getInstance().isGoogleDnsEnabled());
+	Core::Boot::show("network");
 	if (Utils::System::isNew3DS()) {
 		Network::NetworkManager::getInstance().init(3, 2);
 	} else {
 		Network::NetworkManager::getInstance().init(2, 1);
 	}
 
-	Network::HttpClient timeClient;
-	timeClient.setTimeout(3);
-	Network::HttpResponse resp = timeClient.get("http://detectportal.firefox.com/success.txt", {});
-	if (!resp.date.empty()) {
-		UI::MessageUtils::syncClock(resp.date);
-	}
+	// The clock check is a network request, which can take a while (longer still through
+	// Google DNS); it no longer holds up the first screen.
+	s32 mainPriority = 0x30;
+	svcGetThreadPriority(&mainPriority, CUR_THREAD_HANDLE);
+	threadCreate(
+	    [](void *) {
+		    Network::HttpClient timeClient;
+		    timeClient.setTimeout(3);
+		    Network::HttpResponse resp = timeClient.get("http://detectportal.firefox.com/success.txt", {});
+		    if (!resp.date.empty()) {
+			    UI::MessageUtils::syncClock(resp.date);
+		    }
+	    },
+	    nullptr, 32 * 1024, mainPriority + 1, -2, true);
 
-	Network::MediaCache::init();
+	if (!Core::Boot::isSafeStart()) {
+		Core::Boot::show("image cache");
+		Network::MediaCache::init();
+	}
+	Core::Boot::show("images");
 	UI::ImageManager::getInstance().init();
+	Core::Boot::show("Discord client");
 	Discord::DiscordClient::getInstance().init();
+	Core::Boot::show("screens");
+	Core::Boot::endScreens();
 	UI::ScreenManager::getInstance().init();
-	Core::SystemStatus::init();
+	if (!Core::Boot::isSafeStart()) {
+		Core::SystemStatus::init();
+	} else {
+		UI::ScreenManager::getInstance().showToast(Core::Boot::safeStartNote());
+	}
 
 	while (aptMainLoop()) {
 		hidScanInput();
@@ -132,6 +168,7 @@ int main(int argc, char **argv) {
 
 		UI::ScreenManager::getInstance().update();
 		Discord::DiscordClient::getInstance().update();
+		Core::Boot::tick(Discord::DiscordClient::getInstance().getState() == Discord::ConnectionState::READY);
 
 		if (UI::ScreenManager::getInstance().shouldCloseApplication()) {
 			break;
