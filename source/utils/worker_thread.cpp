@@ -75,6 +75,21 @@ void WorkerThread::start(std::function<void()> fn, int priorityDelta, size_t sta
 	}
 }
 
+void WorkerThread::startOnCore(std::function<void()> fn, int priorityDelta, size_t stackSize, int core) {
+	join();
+	auto *heapFn = new std::function<void()>(std::move(fn));
+	const s32 prio = workerPriority(priorityDelta);
+	thread = threadCreate(trampoline, heapFn, stackSize, prio, core, false);
+	if (!thread && core != -2) {
+		Logger::log("[Thread] Core %d unavailable, using the default core", core);
+		thread = threadCreate(trampoline, heapFn, stackSize, prio, -2, false);
+	}
+	if (!thread) {
+		delete heapFn;
+		Logger::log("[Thread] threadCreate failed (prio 0x%lx, stack %u)", (unsigned long)prio, (unsigned)stackSize);
+	}
+}
+
 void WorkerThread::join() {
 	if (thread) {
 		threadJoin(thread, U64_MAX);

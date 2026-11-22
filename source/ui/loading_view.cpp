@@ -17,7 +17,7 @@ namespace LoadingView {
 namespace {
 
 constexpr const char *ICON = "romfs:/tricord-icon-128.png";
-constexpr int TIP_COUNT = 8;
+constexpr int TIP_COUNT = 9;
 constexpr double TIP_SECONDS = 5.0;
 
 float smoothed = 0.0f;

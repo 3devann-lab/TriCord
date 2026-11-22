@@ -119,6 +119,166 @@ void fitFrame(double width, double height, int boxW, int boxH, int &outW, int &o
 
 } // namespace
 
+const int MORTON[] = {0,  1,  4,  5,  16, 17, 20, 21, 2,  3,  6,  7,  18, 19, 22, 23, 8,  9,  12, 13, 24, 25,
+                      28, 29, 10, 11, 14, 15, 26, 27, 30, 31, 32, 33, 36, 37, 48, 49, 52, 53, 34, 35, 38, 39,
+                      50, 51, 54, 55, 40, 41, 44, 45, 56, 57, 60, 61, 42, 43, 46, 47, 58, 59, 62, 63};
+
+constexpr int TEX_W = VideoDecoder::TEXTURE_WIDTH;
+constexpr int TEX_H = VideoDecoder::TEXTURE_HEIGHT;
+constexpr int CLAMP_OFFSET = 320;
+constexpr int CLAMP_SIZE = 960;
+
+// Integer YUV to RGB565 through lookup tables: per pixel, three table reads and two ORs.
+struct ColorTables {
+	int16_t yLimited[256];
+	int16_t rv[256];
+	int16_t gu[256];
+	int16_t gv[256];
+	int16_t bu[256];
+	uint16_t r[CLAMP_SIZE];
+	uint16_t g[CLAMP_SIZE];
+	uint16_t b[CLAMP_SIZE];
+
+	ColorTables() {
+		for (int i = 0; i < 256; i++) {
+			yLimited[i] = (int16_t)(((i - 16) * 298) >> 8);
+			rv[i] = (int16_t)((409 * (i - 128)) >> 8);
+			gu[i] = (int16_t)((100 * (i - 128)) >> 8);
+			gv[i] = (int16_t)((208 * (i - 128)) >> 8);
+			bu[i] = (int16_t)((516 * (i - 128)) >> 8);
+		}
+		for (int i = 0; i < CLAMP_SIZE; i++) {
+			const int c = std::clamp(i - CLAMP_OFFSET, 0, 255);
+			r[i] = (uint16_t)((c >> 3) << 11);
+			g[i] = (uint16_t)((c >> 2) << 5);
+			b[i] = (uint16_t)(c >> 3);
+		}
+	}
+};
+
+const ColorTables &colorTables() {
+	static const ColorTables tables;
+	return tables;
+}
+
+// For each display column and row, the source coordinate to sample. With a quarter turn the display's
+// columns walk the source's rows, which is what swapped means.
+struct TileMap {
+	int srcW = 0;
+	int srcH = 0;
+	int rotation = -1;
+	int dispW = 0;
+	int dispH = 0;
+	bool swapped = false;
+	std::vector<int> cols;
+	std::vector<int> rows;
+
+	void setup(int sw, int sh, int rot, int dw, int dh) {
+		if (sw == srcW && sh == srcH && rot == rotation && dw == dispW && dh == dispH) {
+			return;
+		}
+		srcW = sw;
+		srcH = sh;
+		rotation = rot;
+		dispW = dw;
+		dispH = dh;
+		swapped = rot == 90 || rot == 270;
+		cols.resize(dw);
+		rows.resize(dh);
+		auto scale = [](int i, int span, int src) { return std::min(src - 1, (int)((int64_t)i * src / span)); };
+		for (int dx = 0; dx < dw; dx++) {
+			switch (rot) {
+			case 90:
+				cols[dx] = scale(dw - 1 - dx, dw, sh);
+				break;
+			case 180:
+				cols[dx] = scale(dw - 1 - dx, dw, sw);
+				break;
+			case 270:
+				cols[dx] = scale(dx, dw, sh);
+				break;
+			default:
+				cols[dx] = scale(dx, dw, sw);
+			}
+		}
+		for (int dy = 0; dy < dh; dy++) {
+			switch (rot) {
+			case 90:
+				rows[dy] = scale(dy, dh, sw);
+				break;
+			case 180:
+				rows[dy] = scale(dh - 1 - dy, dh, sh);
+				break;
+			case 270:
+				rows[dy] = scale(dh - 1 - dy, dh, sw);
+				break;
+			default:
+				rows[dy] = scale(dy, dh, sh);
+			}
+		}
+	}
+};
+
+inline uint16_t *tileRow(uint16_t *tiled, int dy) { return tiled + ((size_t)(dy >> 3) * (TEX_W >> 3) << 6); }
+
+// Planar 4:2:0 straight into the tiled texture, scaled and rotated on the way.
+void yuv420ToTiled(const AVFrame *frame, const TileMap &map, uint16_t *tiled) {
+	const ColorTables &t = colorTables();
+	const bool full = frame->color_range == AVCOL_RANGE_JPEG || frame->format == AV_PIX_FMT_YUVJ420P;
+	const uint8_t *Y = frame->data[0];
+	const uint8_t *U = frame->data[1];
+	const uint8_t *V = frame->data[2];
+	const int ys = frame->linesize[0];
+	const int us = frame->linesize[1];
+	const int vs = frame->linesize[2];
+	auto pixel = [&](int y, int u, int v) -> uint16_t {
+		const int luma = full ? y : t.yLimited[y];
+		return t.r[luma + t.rv[v] + CLAMP_OFFSET] | t.g[luma - t.gu[u] - t.gv[v] + CLAMP_OFFSET] |
+		       t.b[luma + t.bu[u] + CLAMP_OFFSET];
+	};
+	for (int dy = 0; dy < map.dispH; dy++) {
+		const int *morton = &MORTON[(dy & 7) << 3];
+		uint16_t *row = tileRow(tiled, dy);
+		if (!map.swapped) {
+			const int sy = map.rows[dy];
+			const uint8_t *yRow = Y + (size_t)sy * ys;
+			const uint8_t *uRow = U + (size_t)(sy >> 1) * us;
+			const uint8_t *vRow = V + (size_t)(sy >> 1) * vs;
+			for (int dx = 0; dx < map.dispW; dx++) {
+				const int sx = map.cols[dx];
+				row[((dx >> 3) << 6) + morton[dx & 7]] = pixel(yRow[sx], uRow[sx >> 1], vRow[sx >> 1]);
+			}
+		} else {
+			const int sx = map.rows[dy];
+			for (int dx = 0; dx < map.dispW; dx++) {
+				const int sy = map.cols[dx];
+				row[((dx >> 3) << 6) + morton[dx & 7]] =
+				    pixel(Y[(size_t)sy * ys + sx], U[(size_t)(sy >> 1) * us + (sx >> 1)],
+				          V[(size_t)(sy >> 1) * vs + (sx >> 1)]);
+			}
+		}
+	}
+}
+
+// An RGB565 picture (stride in pixels) into the tiled texture, scaled and rotated.
+void rgb565ToTiled(const uint16_t *src, int stride, const TileMap &map, uint16_t *tiled) {
+	for (int dy = 0; dy < map.dispH; dy++) {
+		const int *morton = &MORTON[(dy & 7) << 3];
+		uint16_t *row = tileRow(tiled, dy);
+		if (!map.swapped) {
+			const uint16_t *srcRow = src + (size_t)map.rows[dy] * stride;
+			for (int dx = 0; dx < map.dispW; dx++) {
+				row[((dx >> 3) << 6) + morton[dx & 7]] = srcRow[map.cols[dx]];
+			}
+		} else {
+			const int sx = map.rows[dy];
+			for (int dx = 0; dx < map.dispW; dx++) {
+				row[((dx >> 3) << 6) + morton[dx & 7]] = src[(size_t)map.cols[dx] * stride + sx];
+			}
+		}
+	}
+}
+
 struct VideoDecoder::Impl {
 	std::string path;
 	double startAt = 0.0;
@@ -174,6 +334,7 @@ struct VideoDecoder::Impl {
 	size_t videoBytes = 0;
 
 	bool tooLarge = false;
+	AVDiscard baseSkip = AVDISCARD_DEFAULT;
 	bool mvdInited = false;
 	bool mvdActive = false;
 	bool mvdFailed = false;
@@ -185,7 +346,8 @@ struct VideoDecoder::Impl {
 	int mvdW = 0;
 	int mvdH = 0;
 	MVDSTD_Config mvdConfig;
-	std::vector<int> scaleCols;
+	TileMap tileMap;
+	std::vector<uint16_t> swsScratch;
 
 	ndspWaveBuf waveBufs[WAVEBUF_COUNT];
 	int16_t *waveData = nullptr;
@@ -236,8 +398,14 @@ struct VideoDecoder::Impl {
 		// A stream that grows mid-way would outrun the memory check above.
 		videoCtx->max_pixels = (int64_t)stream->codecpar->width * stream->codecpar->height;
 		videoCtx->flags2 |= AV_CODEC_FLAG2_FAST;
-		// Deblocking is a large share of H.264 decoding, and the Old 3DS cannot spare it.
-		videoCtx->skip_loop_filter = Utils::System::isNew3DS() ? AVDISCARD_NONREF : AVDISCARD_ALL;
+		// Deblocking is a large share of H.264 decoding, and neither console can spare it; the picture is
+		// shrunk to the screen anyway, which hides most of what it would smooth.
+		videoCtx->skip_loop_filter = AVDISCARD_ALL;
+		// Past what the CPU can keep up with, B-frames go: half the frames for B-frame-heavy video, but steady.
+		const int64_t heavy = Utils::System::isNew3DS() ? 1280LL * 720 : 640LL * 360;
+		baseSkip = (int64_t)stream->codecpar->width * stream->codecpar->height > heavy ? AVDISCARD_NONREF
+		                                                                                 : AVDISCARD_DEFAULT;
+		videoCtx->skip_frame = baseSkip;
 		if (avcodec_open2(videoCtx, codec, nullptr) < 0) {
 			avcodec_free_context(&videoCtx);
 			return false;
@@ -440,6 +608,8 @@ struct VideoDecoder::Impl {
 			const bool sideways = opened.rotation == 90 || opened.rotation == 270;
 			fitFrame(width, par->height, sideways ? SCREEN_H : SCREEN_W, sideways ? SCREEN_W : SCREEN_H,
 			         opened.frameWidth, opened.frameHeight);
+			opened.displayWidth = std::min(sideways ? opened.frameHeight : opened.frameWidth, TEX_W);
+			opened.displayHeight = std::min(sideways ? opened.frameWidth : opened.frameHeight, TEX_H);
 			opened.hasVideo = true;
 			opened.hardware = info.hardware;
 		}
@@ -537,7 +707,7 @@ struct VideoDecoder::Impl {
 			return buffer;
 		}
 		buffersMade++;
-		return std::vector<uint16_t>((size_t)info.frameWidth * info.frameHeight);
+		return std::vector<uint16_t>((size_t)TEX_W * TEX_H);
 	}
 
 	void publishFrame(std::vector<uint16_t> &&pixels, double pts, int seekGeneration) {
@@ -572,25 +742,34 @@ struct VideoDecoder::Impl {
 		lastVideoPts = pts;
 
 		const double late = lateness(pts);
-		videoCtx->skip_frame = late > LATE_SKIP_NONREF ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+		videoCtx->skip_frame = late > LATE_SKIP_NONREF ? AVDISCARD_NONREF : baseSkip;
 
 		std::vector<uint16_t> pixels = reserveFrame(pts, seekGeneration);
 		if (pixels.empty()) {
 			return;
 		}
-		const int outW = info.frameWidth;
-		const int outH = info.frameHeight;
-		const int flags = Utils::System::isNew3DS() ? SWS_FAST_BILINEAR : SWS_POINT;
-		sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, outW, outH,
-		                           AV_PIX_FMT_RGB565, flags, nullptr, nullptr, nullptr);
-		if (!sws) {
-			std::lock_guard<std::mutex> lock(mutex);
-			freeBuffers.push_back(std::move(pixels));
-			return;
+		const bool planar420 = frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P;
+		if (planar420) {
+			tileMap.setup(frame->width, frame->height, info.rotation, info.displayWidth, info.displayHeight);
+			yuv420ToTiled(frame, tileMap, pixels.data());
+		} else {
+			// Anything else goes through swscale to RGB565 at the frame size first.
+			const int outW = info.frameWidth;
+			const int outH = info.frameHeight;
+			sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, outW, outH,
+			                           AV_PIX_FMT_RGB565, SWS_POINT, nullptr, nullptr, nullptr);
+			if (!sws) {
+				std::lock_guard<std::mutex> lock(mutex);
+				freeBuffers.push_back(std::move(pixels));
+				return;
+			}
+			swsScratch.resize((size_t)outW * outH);
+			uint8_t *dst[4] = {(uint8_t *)swsScratch.data(), nullptr, nullptr, nullptr};
+			int dstStride[4] = {outW * 2, 0, 0, 0};
+			sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dst, dstStride);
+			tileMap.setup(outW, outH, info.rotation, info.displayWidth, info.displayHeight);
+			rgb565ToTiled(swsScratch.data(), outW, tileMap, pixels.data());
 		}
-		uint8_t *dst[4] = {(uint8_t *)pixels.data(), nullptr, nullptr, nullptr};
-		int dstStride[4] = {outW * 2, 0, 0, 0};
-		sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dst, dstStride);
 		publishFrame(std::move(pixels), pts, seekGeneration);
 	}
 
@@ -608,7 +787,7 @@ struct VideoDecoder::Impl {
 		}
 	}
 
-	// Nearest-neighbour shrink of the decoded MVD frame into the output size.
+	// The decoded MVD frame, shrunk and rotated into the tiled texture layout.
 	void outputMvdFrame(double pts, int seekGeneration) {
 		std::vector<uint16_t> pixels = reserveFrame(pts, seekGeneration);
 		if (pixels.empty()) {
@@ -617,23 +796,9 @@ struct VideoDecoder::Impl {
 		const AVCodecParameters *par = fmt->streams[videoStream]->codecpar;
 		const int srcW = std::min(par->width, mvdW);
 		const int srcH = std::min(par->height, mvdH);
-		const int outW = info.frameWidth;
-		const int outH = info.frameHeight;
-		if ((int)scaleCols.size() != outW) {
-			scaleCols.resize(outW);
-			for (int x = 0; x < outW; x++) {
-				scaleCols[x] = std::min(srcW - 1, (int)((int64_t)x * srcW / outW));
-			}
-		}
 		GSPGPU_InvalidateDataCache(mvdOut, (u32)mvdW * mvdH * 2);
-		const uint16_t *src = (const uint16_t *)mvdOut;
-		for (int y = 0; y < outH; y++) {
-			const uint16_t *row = src + (size_t)std::min(srcH - 1, (int)((int64_t)y * srcH / outH)) * mvdW;
-			uint16_t *out = pixels.data() + (size_t)y * outW;
-			for (int x = 0; x < outW; x++) {
-				out[x] = row[scaleCols[x]];
-			}
-		}
+		tileMap.setup(srcW, srcH, info.rotation, info.displayWidth, info.displayHeight);
+		rgb565ToTiled((const uint16_t *)mvdOut, mvdW, tileMap, pixels.data());
 		publishFrame(std::move(pixels), pts, seekGeneration);
 	}
 
@@ -748,7 +913,7 @@ struct VideoDecoder::Impl {
 		}
 		if (videoCtx) {
 			avcodec_flush_buffers(videoCtx);
-			videoCtx->skip_frame = AVDISCARD_DEFAULT;
+			videoCtx->skip_frame = baseSkip;
 		}
 		if (bsf) {
 			av_bsf_flush(bsf);
@@ -1157,7 +1322,18 @@ void VideoDecoder::start(const std::string &path, double startSeconds, bool allo
 	impl->loop = loop;
 	Impl *raw = impl.get();
 	// FFmpeg's H.264 decoder wants a deep stack.
-	impl->demuxThread.start([raw] { raw->demuxMain(); }, 2, DEMUX_STACK, true);
+	if (Utils::System::isNew3DS()) {
+		// Core 2 is the New 3DS's spare core.
+		impl->demuxThread.start([raw] { raw->demuxMain(); }, 2, DEMUX_STACK, true);
+	} else {
+		// The Old 3DS has no spare core, but the system core can lend the app most of its time. Decoding
+		// there leaves core 0 to the UI and audio, close to doubling what the console can decode.
+		static bool timeLimitRaised = false;
+		if (!timeLimitRaised && R_SUCCEEDED(APT_SetAppCpuTimeLimit(80))) {
+			timeLimitRaised = true;
+		}
+		impl->demuxThread.startOnCore([raw] { raw->demuxMain(); }, 2, DEMUX_STACK, timeLimitRaised ? 1 : -2);
+	}
 }
 
 void VideoDecoder::stop() {
@@ -1197,8 +1373,8 @@ bool VideoDecoder::consumeFrame(const std::function<void(const uint16_t *, int, 
 			impl->readyFrames.pop_front();
 			have = true;
 		}
-		width = impl->info.frameWidth;
-		height = impl->info.frameHeight;
+		width = impl->info.displayWidth;
+		height = impl->info.displayHeight;
 	}
 	if (!have) {
 		return false;

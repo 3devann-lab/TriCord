@@ -18,6 +18,9 @@ struct VideoInfo {
 	int frameHeight = 0;
 	// Clockwise degrees the frames need turning by: 0, 90, 180 or 270. Phones record portrait video sideways.
 	int rotation = 0;
+	// The picture as shown, after rotation: what part of the frame texture holds it.
+	int displayWidth = 0;
+	int displayHeight = 0;
 	double duration = 0.0;
 	double frameRate = 0.0;
 	bool hasVideo = false;
@@ -48,9 +51,13 @@ class VideoDecoder {
 	std::string error() const;
 	VideoInfo info() const;
 
-	// Hands the newest due frame to sink, if one arrived since the last call. Pixels are RGB565,
-	// frameWidth x frameHeight with no row padding, before rotation.
-	bool consumeFrame(const std::function<void(const uint16_t *pixels, int width, int height)> &sink);
+	// Frames arrive already in the GPU's tiled layout for a TEXTURE_WIDTH x TEXTURE_HEIGHT RGB565
+	// texture, rotated, with the picture in its top-left displayWidth x displayHeight.
+	static constexpr int TEXTURE_WIDTH = 512;
+	static constexpr int TEXTURE_HEIGHT = 256;
+
+	// Hands the newest due frame to sink, if one arrived since the last call.
+	bool consumeFrame(const std::function<void(const uint16_t *tiled, int displayWidth, int displayHeight)> &sink);
 
 	double position() const;
 	void setPaused(bool paused);
