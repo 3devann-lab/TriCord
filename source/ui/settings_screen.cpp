@@ -1,6 +1,8 @@
 #include "ui/settings_screen.h"
 #include "utils/system_utils.h"
 #include "network/dns.h"
+#include "core/system_status.h"
+#include "utils/redraw.h"
 #include "core/config.h"
 #include "core/i18n.h"
 #include "log.h"
@@ -11,6 +13,20 @@
 #include <algorithm>
 
 namespace UI {
+
+static SettingItem makeToggle(const std::string &labelKey, bool value, std::function<void(bool)> onChange) {
+	SettingItem item;
+	item.label = TR("settings." + labelKey);
+	item.description = TR("settings.desc." + labelKey);
+	item.type = SettingItemType::TOGGLE;
+	item.value = value ? 1 : 0;
+	item.min = 0;
+	item.max = 1;
+	item.valueFormatter = [](int val) { return (val == 1) ? TR("common.enabled") : TR("common.disabled"); };
+	item.onUpdate = [onChange](int val) { onChange(val == 1); };
+	return item;
+}
+
 
 SettingsScreen::SettingsScreen()
     : selectedIndex(0), scrollOffset(0.0f), repeatTimer(0), lastKey(0), isDeveloperMode(false), popupActive(false),
@@ -184,6 +200,10 @@ void SettingsScreen::onEnter() {
 	hiddenChannels.valueFormatter = [](int val) { return (val == 1) ? TR("common.enabled") : TR("common.disabled"); };
 	hiddenChannels.onUpdate = [](int val) { Config::getInstance().setShowHiddenChannelsEnabled(val == 1); };
 	allItems.push_back(hiddenChannels);
+	allItems.push_back(makeToggle("status_bar", Config::getInstance().isStatusBarEnabled(), [](bool on) {
+		Config::getInstance().setStatusBarEnabled(on);
+		Utils::requestRedraw();
+	}));
 
 	// CHAT
 	allItems.push_back({TR("settings.section.chat"), "", SettingItemType::SECTION_HEADER});
@@ -211,6 +231,16 @@ void SettingsScreen::onEnter() {
 	};
 	notificationSound.onUpdate = [](int val) { Config::getInstance().setNotificationSoundEnabled(val == 1); };
 	allItems.push_back(notificationSound);
+
+	Config &cfg = Config::getInstance();
+	allItems.push_back(makeToggle("notify_led", cfg.isNotifyLedEnabled(),
+	                              [](bool on) { Config::getInstance().setNotifyLedEnabled(on); }));
+	allItems.push_back(makeToggle("home_notifications", cfg.isHomeNotificationsEnabled(),
+	                              [](bool on) { Config::getInstance().setHomeNotificationsEnabled(on); }));
+	allItems.push_back(makeToggle("idle_on_lid_close", cfg.isIdleOnLidCloseEnabled(), [](bool on) {
+		Config::getInstance().setIdleOnLidCloseEnabled(on);
+		Core::SystemStatus::applySettings();
+	}));
 
 	if (Utils::System::isNew3DS()) {
 		SettingItem hardwareVideo;

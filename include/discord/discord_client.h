@@ -319,6 +319,8 @@ class DiscordClient {
 	void markChannelReadLatest(const std::string &channelId, const std::string &seenMessageId = "");
 	void markGuildRead(const std::string &guildId);
 	void updatePresence(UserStatus status);
+	// Temporary Idle while the lid is closed; never saved to the account's settings.
+	void setAutoIdle(bool idle);
 	void setGuildMuted(const std::string &guildId, bool muted, int timeWindowMinutes);
 	void setChannelMuted(const std::string &channelId, bool muted, int timeWindowMinutes);
 	// messageNotifications: 0=all, 1=mentions, 2=none (3=inherit, channel only)
@@ -458,6 +460,7 @@ class DiscordClient {
 
 	User self;
 	User currentUser;
+	bool autoIdle = false;
 	std::vector<Guild> guilds;
 	std::vector<Channel> privateChannels;
 	std::vector<GuildFolder> folders;

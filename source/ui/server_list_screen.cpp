@@ -2214,7 +2214,7 @@ void ServerListScreen::renderBottom(C3D_RenderTarget *target) {
 				}
 
 				drawRichText(headerX, 8.5f, 0.5f, 0.55f, 0.55f, ScreenManager::colorAccent(),
-				             getTruncatedRichText(guild->name, 305.0f - headerX, 0.55f, 0.55f));
+				             getTruncatedRichText(guild->name, 305.0f - headerX - statusIndicatorWidth(), 0.55f, 0.55f));
 
 				C2D_DrawRectSolid(10, 32, 0.5f, 320 - 20, 1, ScreenManager::colorSeparator());
 

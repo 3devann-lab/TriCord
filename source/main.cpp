@@ -1,3 +1,4 @@
+#include "core/system_status.h"
 #include "core/config.h"
 #include "discord/discord_client.h"
 #include "discord/voice_client.h"
@@ -121,9 +122,11 @@ int main(int argc, char **argv) {
 	UI::ImageManager::getInstance().init();
 	Discord::DiscordClient::getInstance().init();
 	UI::ScreenManager::getInstance().init();
+	Core::SystemStatus::init();
 
 	while (aptMainLoop()) {
 		hidScanInput();
+		Core::SystemStatus::update();
 
 		UI::ScreenManager::getInstance().update();
 		Discord::DiscordClient::getInstance().update();
@@ -138,6 +141,8 @@ int main(int argc, char **argv) {
 			gspWaitForVBlank();
 		}
 	}
+
+	Core::SystemStatus::exit();
 
 	// Its destructor would otherwise run after socExit and ndspExit.
 	Discord::VoiceClient::getInstance().disconnect();

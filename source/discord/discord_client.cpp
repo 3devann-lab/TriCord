@@ -1,3 +1,5 @@
+#include "core/system_status.h"
+#include "utils/markdown.h"
 #include "discord/discord_client.h"
 #include "core/config.h"
 #include "discord/avatar_cache.h"
@@ -2175,6 +2177,24 @@ void DiscordClient::handleMessageCreate(const rapidjson::Value &d) {
 
 	if (playSound && Config::getInstance().isNotificationSoundEnabled()) {
 		Utils::SoundPlayer::getInstance().play(Utils::Sound::NOTIFICATION);
+	}
+
+	if (playSound && (isPrivate || mentioned)) {
+		std::string author = msg.author.global_name.empty() ? msg.author.username : msg.author.global_name;
+		std::string preview = Utils::Markdown::stripFormatting(msg.content);
+		if (preview.empty() && !msg.attachments.empty()) {
+			preview = Core::I18n::getInstance().get("notify.attachment");
+		} else if (preview.empty() && !msg.stickers.empty()) {
+			preview = Core::I18n::getInstance().get("notify.sticker");
+		}
+		std::string title = author;
+		if (!isPrivate) {
+			const Channel *ch = getChannelPtr(msg.channelId);
+			std::string where = (ch && !ch->name.empty()) ? "#" + ch->name : std::string();
+			title = where.empty() ? author : where;
+			preview = author + ": " + preview;
+		}
+		Core::SystemStatus::notifyMessage(title, preview);
 	}
 
 	// Any message in an unmuted private channel counts towards the badge.
@@ -5032,9 +5052,8 @@ void DiscordClient::updateVoiceState(const std::string &guildId, const std::stri
 	Logger::log("[Voice] Sent Update Voice State (Op 4) guild=%s channel=%s", guildId.c_str(), channelId.c_str());
 }
 
-void DiscordClient::updatePresence(UserStatus status) {
+static std::string presencePayload(UserStatus status, bool afk) {
 	std::string statusStr = statusToString(status);
-
 	rapidjson::StringBuffer s;
 	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
 	writer.StartObject();
@@ -5054,11 +5073,33 @@ void DiscordClient::updatePresence(UserStatus status) {
 	writer.Key("status");
 	writer.String(statusStr.c_str());
 	writer.Key("afk");
-	writer.Bool(false);
+	writer.Bool(afk);
 	writer.EndObject();
 	writer.EndObject();
+	return s.GetString();
+}
 
-	queueSend(s.GetString());
+void DiscordClient::setAutoIdle(bool idle) {
+	UserStatus chosen;
+	{
+		std::lock_guard<std::recursive_mutex> lock(clientMutex);
+		chosen = currentUser.status == UserStatus::UNKNOWN ? UserStatus::ONLINE : currentUser.status;
+		if (autoIdle == idle) {
+			return;
+		}
+		autoIdle = idle;
+	}
+	// Do Not Disturb, Invisible and a chosen Idle stay as they are.
+	if (chosen != UserStatus::ONLINE || getState() != ConnectionState::READY) {
+		return;
+	}
+	queueSend(presencePayload(idle ? UserStatus::IDLE : UserStatus::ONLINE, idle));
+	Logger::log("[Presence] Lid %s: %s", idle ? "closed" : "opened", idle ? "idle" : "online");
+}
+
+void DiscordClient::updatePresence(UserStatus status) {
+	std::string statusStr = statusToString(status);
+	queueSend(presencePayload(status, false));
 
 	if (!token.empty()) {
 		std::string url = "https://discord.com/api/v10/users/@me/settings";

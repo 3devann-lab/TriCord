@@ -21,6 +21,10 @@ std::string getLocalDateString(const std::string &timestamp);
 std::string formatTimeOnly(const std::string &timestamp);
 std::string getISOTimestamp(time_t epoch);
 std::string getRelativeTime(time_t targetEpoch);
+// "in 3 hours" / "5 minutes ago"
+std::string formatRelativeSpan(time_t targetEpoch);
+// Discord's <t:...> styles: t T d D f F R
+std::string formatDiscordTimestamp(time_t epoch, char style);
 
 std::vector<std::string> wrapText(const std::string &text, float maxWidth, float scale, bool unicodeOnly = false);
 bool isEmojiOnly(const std::string &text, int &count);

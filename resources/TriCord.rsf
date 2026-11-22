@@ -159,8 +159,10 @@ AccessControlInfo:
    - frd:u
    - fs:USER
    - gsp::Gpu
+   - gsp::Lcd
    - hid:USER
    - http:C
+   - mcu::HWC
    - ir:rst
    - ir:u
    - ir:USER

@@ -1,3 +1,4 @@
+#include "core/system_status.h"
 #include "ui/screen_manager.h"
 #include "core/config.h"
 #include "core/i18n.h"
@@ -465,6 +466,10 @@ void ScreenManager::update() {
 }
 
 bool ScreenManager::shouldRender() {
+	// Backlights are off while the lid is shut; drawing would only cost battery.
+	if (Core::SystemStatus::isLidClosed()) {
+		return false;
+	}
 	bool requested = Utils::consumeRedrawRequest();
 	bool animating = (currentScreen && currentScreen->isAnimating()) || hamburgerMenu.isAnimating() || toastTimer > 0 ||
 	                 debugOverlayEnabled || statsOverlayEnabled;
@@ -515,6 +520,9 @@ void ScreenManager::render() {
 
 	if (!isMenuHidden()) {
 		drawHamburgerButton();
+		if (Config::getInstance().isStatusBarEnabled()) {
+			drawStatusIndicator(BOTTOM_SCREEN_WIDTH - 6.0f, 11.0f, 0.95f);
+		}
 	}
 
 	if (toastTimer > 0) {
@@ -1362,6 +1370,63 @@ void drawPopupBackground(float x, float y, float w, float h, float z, float radi
 void drawPopupMenuItem(float x, float y, float w, float h, float z, bool isSelected, u32 selectionColor) {
 	if (isSelected) {
 		drawRoundedRect(x, y, z, w, h, 6.0f, selectionColor);
+	}
+}
+
+} // namespace UI
+
+namespace UI {
+
+float statusIndicatorWidth() { return Config::getInstance().isStatusBarEnabled() ? 64.0f : 0.0f; }
+
+void drawStatusIndicator(float rightX, float y, float z) {
+	const u32 text = ScreenManager::colorText();
+	const u32 muted = ScreenManager::colorTextMuted();
+	const u32 dim = (muted & 0x00FFFFFF) | 0x60000000;
+
+	int percent = Core::SystemStatus::batteryPercent();
+	bool charging = Core::SystemStatus::isCharging();
+	float x = rightX;
+
+	if (percent >= 0) {
+		std::string label = std::to_string(percent) + "%";
+		float w = measureText(label, 0.36f, 0.36f);
+		x -= w;
+		drawText(x, y - 1.0f, z, 0.36f, 0.36f, muted, label);
+		x -= 3.0f;
+	}
+
+	// Battery: body, terminal nub, fill by charge.
+	const float bw = 17.0f, bh = 9.0f;
+	x -= 2.0f;
+	C2D_DrawRectSolid(x, y + 2.5f, z, 2.0f, 4.0f, muted);
+	x -= bw;
+	C2D_DrawRectSolid(x, y, z, bw, bh, muted);
+	C2D_DrawRectSolid(x + 1.0f, y + 1.0f, z, bw - 2.0f, bh - 2.0f, ScreenManager::colorBackgroundDark());
+	if (percent >= 0) {
+		u32 fill = charging ? ScreenManager::colorAccent()
+		                    : (percent <= 15 ? ScreenManager::colorError() : ScreenManager::colorSuccess());
+		float fw = (bw - 4.0f) * std::clamp(percent, 0, 100) / 100.0f;
+		C2D_DrawRectSolid(x + 2.0f, y + 2.0f, z, std::max(1.0f, fw), bh - 4.0f, fill);
+	}
+	if (charging) {
+		float cx = x + bw / 2.0f;
+		C2D_DrawTriangle(cx + 1.5f, y - 1.0f, text, cx - 3.0f, y + 5.0f, text, cx + 0.5f, y + 5.0f, text, z);
+		C2D_DrawTriangle(cx - 0.5f, y + 4.0f, text, cx + 3.0f, y + 4.0f, text, cx - 1.5f, y + 10.0f, text, z);
+	}
+
+	// Wi-Fi: three rising bars.
+	x -= 6.0f;
+	bool connected = Core::SystemStatus::isWifiConnected();
+	int bars = connected ? std::max(1, Core::SystemStatus::wifiBars()) : 0;
+	for (int i = 2; i >= 0; i--) {
+		float h = 3.0f + i * 3.0f;
+		x -= 3.0f;
+		C2D_DrawRectSolid(x, y + bh - h, z, 3.0f, h, i < bars ? text : dim);
+		x -= 1.5f;
+	}
+	if (!connected) {
+		drawText(x - 1.0f, y - 2.0f, z, 0.32f, 0.32f, ScreenManager::colorError(), "x");
 	}
 }
 

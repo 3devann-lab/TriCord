@@ -276,6 +276,27 @@ void Config::loadSettings() {
 			if (doc.HasMember("google_dns") && doc["google_dns"].IsBool()) {
 				googleDns = doc["google_dns"].GetBool();
 			}
+			if (doc.HasMember("status_bar") && doc["status_bar"].IsBool()) {
+				statusBar = doc["status_bar"].GetBool();
+			}
+			if (doc.HasMember("notify_led") && doc["notify_led"].IsBool()) {
+				notifyLed = doc["notify_led"].GetBool();
+			}
+			if (doc.HasMember("home_notifications") && doc["home_notifications"].IsBool()) {
+				homeNotifications = doc["home_notifications"].GetBool();
+			}
+			if (doc.HasMember("idle_on_lid_close") && doc["idle_on_lid_close"].IsBool()) {
+				idleOnLidClose = doc["idle_on_lid_close"].GetBool();
+			}
+			if (doc.HasMember("image_cache") && doc["image_cache"].IsBool()) {
+				imageCache = doc["image_cache"].GetBool();
+			}
+			if (doc.HasMember("message_cache") && doc["message_cache"].IsBool()) {
+				messageCache = doc["message_cache"].GetBool();
+			}
+			if (doc.HasMember("update_check") && doc["update_check"].IsBool()) {
+				updateCheck = doc["update_check"].GetBool();
+			}
 			if (doc.HasMember("user_volumes") && doc["user_volumes"].IsObject()) {
 				userVolumes.clear();
 				for (auto it = doc["user_volumes"].MemberBegin(); it != doc["user_volumes"].MemberEnd(); ++it) {
@@ -336,6 +357,20 @@ void Config::saveSettings() {
 	writer.Bool(debugShortcuts);
 	writer.Key("google_dns");
 	writer.Bool(googleDns);
+	writer.Key("status_bar");
+	writer.Bool(statusBar);
+	writer.Key("notify_led");
+	writer.Bool(notifyLed);
+	writer.Key("home_notifications");
+	writer.Bool(homeNotifications);
+	writer.Key("idle_on_lid_close");
+	writer.Bool(idleOnLidClose);
+	writer.Key("image_cache");
+	writer.Bool(imageCache);
+	writer.Key("message_cache");
+	writer.Bool(messageCache);
+	writer.Key("update_check");
+	writer.Bool(updateCheck);
 	writer.Key("user_volumes");
 	writer.StartObject();
 	for (const auto &pair : userVolumes) {
@@ -381,6 +416,48 @@ void Config::setDebugShortcutsEnabled(bool enabled) {
 void Config::setGoogleDnsEnabled(bool enabled) {
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	googleDns = enabled;
+	saveSettings();
+}
+
+void Config::setStatusBarEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	statusBar = enabled;
+	saveSettings();
+}
+
+void Config::setNotifyLedEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	notifyLed = enabled;
+	saveSettings();
+}
+
+void Config::setHomeNotificationsEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	homeNotifications = enabled;
+	saveSettings();
+}
+
+void Config::setIdleOnLidCloseEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	idleOnLidClose = enabled;
+	saveSettings();
+}
+
+void Config::setImageCacheEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	imageCache = enabled;
+	saveSettings();
+}
+
+void Config::setMessageCacheEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	messageCache = enabled;
+	saveSettings();
+}
+
+void Config::setUpdateCheckEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	updateCheck = enabled;
 	saveSettings();
 }
 

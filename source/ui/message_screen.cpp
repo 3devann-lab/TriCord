@@ -438,7 +438,7 @@ void MessageScreen::onEnter() {
 
 	this->channelName = MessageUtils::getChannelDisplayName(channel);
 
-	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f, 0.55f, 0.55f);
+	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f - statusIndicatorWidth(), 0.55f, 0.55f);
 
 	client.setSelectedChannelId(channelId);
 
@@ -511,7 +511,7 @@ void MessageScreen::onEnter() {
 		catchUpMessages();
 	});
 
-	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f, 0.55f, 0.55f);
+	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f - statusIndicatorWidth(), 0.55f, 0.55f);
 	this->messages = client.getEphemeralMessages(channelId);
 	targetScrollY = 0.0f;
 	currentScrollY = 0.0f;

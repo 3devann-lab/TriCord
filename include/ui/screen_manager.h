@@ -213,6 +213,11 @@ float measureRichTextUnicodeOnly(const std::string &rawText, float scaleX, float
 std::string getTruncatedText(const std::string &text, float maxWidth, float scaleX, float scaleY);
 std::string getTruncatedRichText(const std::string &rawText, float maxWidth, float scaleX, float scaleY);
 
+// Wi-Fi bars, battery and charge level, right-aligned to rightX.
+void drawStatusIndicator(float rightX, float y, float z);
+// Width drawStatusIndicator takes, or 0 when it is turned off.
+float statusIndicatorWidth();
+
 void drawOverlay(float z);
 void drawPopupBackground(float x, float y, float w, float h, float z, float radius = 12.0f);
 void drawPopupMenuItem(float x, float y, float w, float h, float z, bool isSelected, u32 selectionColor);

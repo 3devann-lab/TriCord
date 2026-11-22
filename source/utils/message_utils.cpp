@@ -465,6 +465,116 @@ std::string getRelativeTime(time_t targetEpoch) {
 	return Utils::String::trim(result);
 }
 
+static std::string relativeAmount(long long value, const char *singularKey, const char *pluralKey) {
+	if (value == 1) {
+		return TR(singularKey);
+	}
+	return Core::I18n::format(TR(pluralKey), std::to_string(value));
+}
+
+std::string formatRelativeSpan(time_t targetEpoch) {
+	long long diff = (long long)targetEpoch - (long long)time(NULL);
+	bool future = diff > 0;
+	long long span = future ? diff : -diff;
+
+	if (span < 45) {
+		return TR(future ? "time.rel.in_moments" : "time.rel.just_now");
+	}
+
+	std::string amount;
+	if (span < 3600) {
+		amount = relativeAmount(std::max(1LL, (span + 30) / 60), "time.rel.minute", "time.rel.minutes");
+	} else if (span < 86400) {
+		amount = relativeAmount((span + 1800) / 3600, "time.rel.hour", "time.rel.hours");
+	} else if (span < 30LL * 86400) {
+		amount = relativeAmount((span + 43200) / 86400, "time.rel.day", "time.rel.days");
+	} else if (span < 365LL * 86400) {
+		amount = relativeAmount(std::max(1LL, span / (30LL * 86400)), "time.rel.month", "time.rel.months");
+	} else {
+		amount = relativeAmount(std::max(1LL, span / (365LL * 86400)), "time.rel.year", "time.rel.years");
+	}
+	return Core::I18n::format(TR(future ? "time.rel.future" : "time.rel.past"), amount);
+}
+
+std::string formatDiscordTimestamp(time_t epoch, char style) {
+	if (style == 'R') {
+		return formatRelativeSpan(epoch);
+	}
+
+	time_t local = epoch + (time_t)get3DSLocalTimeOffset();
+	struct tm tmv;
+	if (gmtime_r(&local, &tmv) == nullptr) {
+		return "";
+	}
+
+	char timeShort[16];
+	snprintf(timeShort, sizeof(timeShort), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+	char buffer[96];
+	switch (style) {
+	case 't':
+		return timeShort;
+	case 'T':
+		snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+		return buffer;
+	case 'd':
+		snprintf(buffer, sizeof(buffer), "%04d/%02d/%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+		return buffer;
+	case 'D':
+		strftime(buffer, sizeof(buffer), "%B %d, %Y", &tmv);
+		return buffer;
+	case 'F':
+		strftime(buffer, sizeof(buffer), "%A, %B %d, %Y", &tmv);
+		return std::string(buffer) + " " + timeShort;
+	default:
+		strftime(buffer, sizeof(buffer), "%B %d, %Y", &tmv);
+		return std::string(buffer) + " " + timeShort;
+	}
+}
+
+// "<t:1700000000>" or "<t:1700000000:R>"; the style letter is optional.
+static bool processTimestampTag(const std::string &text, size_t &i, std::string &out) {
+	if (text.compare(i, 3, "<t:") != 0) {
+		return false;
+	}
+	size_t pos = i + 3;
+	size_t digitsStart = pos;
+	bool negative = pos < text.length() && text[pos] == '-';
+	if (negative) {
+		pos++;
+	}
+	while (pos < text.length() && pos - digitsStart < 14 && text[pos] >= '0' && text[pos] <= '9') {
+		pos++;
+	}
+	if (pos == digitsStart + (negative ? 1 : 0)) {
+		return false;
+	}
+	char style = 'f';
+	if (pos < text.length() && text[pos] == ':') {
+		if (pos + 2 >= text.length() || text[pos + 2] != '>' || !strchr("tTdDfFR", text[pos + 1])) {
+			return false;
+		}
+		style = text[pos + 1];
+		pos += 2;
+	}
+	if (pos >= text.length() || text[pos] != '>') {
+		return false;
+	}
+
+	long long value = strtoll(text.substr(digitsStart, pos - digitsStart).c_str(), nullptr, 10);
+	std::string shown = formatDiscordTimestamp((time_t)value, style);
+	if (shown.empty()) {
+		return false;
+	}
+
+	u32 fg = ScreenManager::colorText();
+	u32 bg = (ScreenManager::colorTextMuted() & 0x00FFFFFF) | 0x38000000;
+	char tag[160];
+	snprintf(tag, sizeof(tag), "\x01%lu;%lu;%s\x02", (unsigned long)fg, (unsigned long)bg, shown.c_str());
+	out += tag;
+	i = pos + 1;
+	return true;
+}
+
 std::string getLocalDateString(const std::string &timestamp) {
 	struct tm lt;
 	if (!getLocalTm(timestamp, lt)) {
@@ -706,6 +816,9 @@ std::string formatMentions(const std::string &text, const Discord::Message &msg)
 	std::string out;
 	size_t i = 0;
 	while (i < text.length()) {
+		if (processTimestampTag(text, i, out)) {
+			continue;
+		}
 		if (processAngleBracketMention(text, i, msg, out)) {
 			continue;
 		}
