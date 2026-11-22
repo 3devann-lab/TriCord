@@ -138,7 +138,8 @@ std::string parentDirectory(const std::string &path) {
 	}
 	const size_t slash = trimmed.find_last_of('/');
 	if (slash == std::string::npos) {
-		return trimmed;
+		// A device root such as "sdmc:/" is its own parent.
+		return (!trimmed.empty() && trimmed.back() == ':') ? trimmed + "/" : trimmed;
 	}
 	// Keep the root's slash, so "sdmc:/DCIM" goes to "sdmc:/".
 	if (slash > 0 && trimmed[slash - 1] == ':') {
