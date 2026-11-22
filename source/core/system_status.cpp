@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "discord/discord_client.h"
 #include "utils/redraw.h"
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -13,11 +14,17 @@ namespace SystemStatus {
 namespace {
 
 std::mutex notifyMutex;
-bool ptmuReady = false;
-bool mcuReady = false;
-bool lcdReady = false;
-bool newsReady = false;
-bool acReady = false;
+// Connected on a background thread, so these are only read once servicesReady is set.
+std::atomic<bool> ptmuReady{false};
+std::atomic<bool> mcuReady{false};
+std::atomic<bool> lcdReady{false};
+std::atomic<bool> newsReady{false};
+std::atomic<bool> acReady{false};
+std::atomic<bool> servicesReady{false};
+bool settingsApplied = false;
+// The lid only counts as shut after it has been seen open and then read shut a few times running.
+bool lidSeenOpen = false;
+int closedReads = 0;
 
 std::atomic<int> battery{-1};
 std::atomic<bool> charging{false};
@@ -172,22 +179,51 @@ size_t toUtf16(const std::string &text, u16 *out, size_t maxUnits) {
 
 } // namespace
 
-void init() {
-	ptmuReady = R_SUCCEEDED(ptmuInit());
-	mcuReady = R_SUCCEEDED(mcuHwcInit());
-	lcdReady = R_SUCCEEDED(gspLcdInit());
-	newsReady = R_SUCCEEDED(newsInit());
-	acReady = R_SUCCEEDED(acInit());
-	Logger::log("[System] ptm=%d mcu=%d lcd=%d news=%d ac=%d", ptmuReady, mcuReady, lcdReady, newsReady, acReady);
+// Optional services: if one is missing or already fully in use (Rosalina keeps some open),
+// srvGetServiceHandle would otherwise wait forever, so this runs on its own thread and asks
+// the service manager to fail instead of waiting.
+void connectServices(void *) {
+	srvSetBlockingPolicy(true);
+	auto connect = [](const char *name, Result (*fn)(), std::atomic<bool> &flag) {
+		bool registered = false;
+		if (R_FAILED(srvIsServiceRegistered(&registered, name)) || !registered) {
+			Logger::log("[System] %s is not available", name);
+			return;
+		}
+		Result res = fn();
+		flag.store(R_SUCCEEDED(res));
+		if (R_FAILED(res)) {
+			Logger::log("[System] %s: %08lX", name, (unsigned long)res);
+		}
+	};
+	connect("ptm:u", ptmuInit, ptmuReady);
+	connect("mcu::HWC", mcuHwcInit, mcuReady);
+	connect("gsp::Lcd", gspLcdInit, lcdReady);
+	connect("news:u", newsInit, newsReady);
+	connect("ac:u", acInit, acReady);
+	srvSetBlockingPolicy(false);
+	Logger::log("[System] ptm=%d mcu=%d lcd=%d news=%d ac=%d", ptmuReady.load(), mcuReady.load(), lcdReady.load(),
+	            newsReady.load(), acReady.load());
+	servicesReady.store(true);
+	Utils::requestRedraw();
+}
 
+void init() {
 	aptHook(&hookCookie, aptCallback, nullptr);
 	lastInputMs.store(osGetTime());
-	applySettings();
-	pollPower();
+	s32 priority = 0x30;
+	svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+	if (!threadCreate(connectServices, nullptr, 16 * 1024, std::min(0x3F, (int)priority + 1), -2, true)) {
+		Logger::log("[System] Could not start the service thread");
+	}
 }
 
 void exit() {
 	aptUnhook(&hookCookie);
+	// Still connecting (or stuck): leave the services alone.
+	if (!servicesReady.load()) {
+		return;
+	}
 	clearLed();
 	if (lidClosed.load()) {
 		setBacklights(true);
@@ -196,22 +232,21 @@ void exit() {
 		aptSetSleepAllowed(true);
 		sleepBlocked = false;
 	}
-	if (acReady) {
+	if (acReady.exchange(false)) {
 		acExit();
 	}
-	if (newsReady) {
+	if (newsReady.exchange(false)) {
 		newsExit();
 	}
-	if (lcdReady) {
+	if (lcdReady.exchange(false)) {
 		gspLcdExit();
 	}
-	if (mcuReady) {
+	if (mcuReady.exchange(false)) {
 		mcuHwcExit();
 	}
-	if (ptmuReady) {
+	if (ptmuReady.exchange(false)) {
 		ptmuExit();
 	}
-	acReady = newsReady = lcdReady = mcuReady = ptmuReady = false;
 }
 
 void applySettings() {
@@ -229,18 +264,39 @@ void applySettings() {
 
 void update() {
 	u64 now = osGetTime();
-	if (hidKeysDown() || hidKeysHeld()) {
+	bool input = hidKeysDown() || hidKeysHeld();
+	if (input) {
 		lastInputMs.store(now);
 		if (ledOn.load() && !lidClosed.load()) {
 			clearLed();
 		}
+	}
+	// Buttons or the touch screen in use: the lid is open, whatever was read before.
+	if (input && lidClosed.load()) {
+		closedReads = 0;
+		handleLid(false);
+	}
+
+	if (!servicesReady.load()) {
+		return;
+	}
+	if (!settingsApplied) {
+		settingsApplied = true;
+		applySettings();
+		pollPower();
 	}
 
 	if (sleepBlocked && --lidCountdown <= 0) {
 		lidCountdown = 10;
 		u8 shell = 1;
 		if (R_SUCCEEDED(PTMU_GetShellState(&shell))) {
-			handleLid(shell == 0);
+			if (shell != 0) {
+				lidSeenOpen = true;
+				closedReads = 0;
+				handleLid(false);
+			} else if (lidSeenOpen && ++closedReads >= 3) {
+				handleLid(true);
+			}
 		}
 	}
 
@@ -259,6 +315,9 @@ bool isInBackground() { return suspended.load() || asleep.load() || lidClosed.lo
 
 void notifyMessage(const std::string &title, const std::string &body) {
 	std::lock_guard<std::mutex> lock(notifyMutex);
+	if (!servicesReady.load()) {
+		return;
+	}
 	u64 now = osGetTime();
 	bool away = isInBackground();
 	// Left untouched for a minute counts as away too, for the light only.

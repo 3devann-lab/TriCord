@@ -142,7 +142,12 @@ void installWorker() {
 	installTotal = size;
 	installDone = 0;
 
-	if (R_FAILED(amInit())) {
+	// Fail rather than wait forever if the install service is busy.
+	srvSetBlockingPolicy(true);
+	Result amRes = amInit();
+	srvSetBlockingPolicy(false);
+	if (R_FAILED(amRes)) {
+		Logger::log("[Updater] amInit failed: %08lX", (unsigned long)amRes);
 		fclose(f);
 		setState(State::FAILED, "am");
 		return;
