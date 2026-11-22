@@ -22,6 +22,20 @@ struct User {
 	int premium_type = 0;
 };
 
+namespace RelationshipType {
+constexpr int FRIEND = 1;
+constexpr int BLOCKED = 2;
+constexpr int INCOMING = 3;
+constexpr int OUTGOING = 4;
+} // namespace RelationshipType
+
+struct Relationship {
+	std::string id;
+	int type = 0;
+	std::string nickname;
+	User user;
+};
+
 struct Overwrite {
 	std::string id;
 	int type = 0;
@@ -53,6 +67,8 @@ struct Channel {
 	std::string last_message_content;
 	std::string op_content;
 	bool is_archived = false;
+	int rate_limit_per_user = 0;
+	bool nsfw = false;
 
 	std::vector<struct Overwrite> permission_overwrites;
 	std::vector<User> recipients;
@@ -64,6 +80,8 @@ const uint64_t ADMINISTRATOR = 1ULL << 3;
 const uint64_t MANAGE_MESSAGES = 1ULL << 13;
 const uint64_t VIEW_CHANNEL = 1ULL << 10;
 const uint64_t SEND_MESSAGES = 1ULL << 11;
+const uint64_t MANAGE_CHANNELS = 1ULL << 4;
+const uint64_t USE_APPLICATION_COMMANDS = 1ULL << 31;
 } // namespace Permissions
 
 struct Role {
@@ -206,6 +224,58 @@ struct FavoriteGif {
 	int width = 0;
 	int height = 0;
 	int order = 0;
+};
+
+namespace CommandOptionType {
+constexpr int SUB_COMMAND = 1;
+constexpr int SUB_COMMAND_GROUP = 2;
+constexpr int STRING = 3;
+constexpr int INTEGER = 4;
+constexpr int BOOLEAN = 5;
+constexpr int USER = 6;
+constexpr int CHANNEL = 7;
+constexpr int ROLE = 8;
+constexpr int MENTIONABLE = 9;
+constexpr int NUMBER = 10;
+constexpr int ATTACHMENT = 11;
+} // namespace CommandOptionType
+
+struct CommandChoice {
+	std::string name;
+	// Kept as text; numeric options send it as a number.
+	std::string value;
+};
+
+struct CommandOption {
+	int type = 0;
+	std::string name;
+	std::string description;
+	bool required = false;
+	bool autocomplete = false;
+	std::vector<CommandChoice> choices;
+	std::vector<CommandOption> options;
+	std::vector<int> channelTypes;
+};
+
+// A slash command, as the application command index lists it.
+struct ApplicationCommand {
+	std::string id;
+	std::string applicationId;
+	std::string applicationName;
+	std::string version;
+	std::string name;
+	std::string description;
+	std::vector<CommandOption> options;
+	// The command object as Discord sent it, echoed back when running the command.
+	std::string rawJson;
+};
+
+// One filled-in option of a command being run; nested for subcommands.
+struct CommandValue {
+	int type = 0;
+	std::string name;
+	std::string value;
+	std::vector<CommandValue> options;
 };
 
 struct Sticker {

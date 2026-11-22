@@ -127,14 +127,15 @@ void SettingsScreen::onEnter() {
 	theme.type = SettingItemType::STEPPER;
 	theme.value = Config::getInstance().getThemeType();
 	theme.min = 0;
-	theme.max = 1;
-	theme.valueFormatter = [](int val) {
-		if (val == 0) {
-			return TR("settings.theme.dark");
+	theme.max = Config::getThemeTypeCount() - 1;
+	theme.valueFormatter = [](int val) { return Config::getThemeTypeName(val); };
+	theme.onUpdate = [](int val) {
+		// A theme from the SD card sits on top of the preset, which would hide the one just picked.
+		if (Config::getInstance().isCustomThemeEnabled()) {
+			Config::getInstance().setCustomThemeEnabled(false);
 		}
-		return TR("settings.theme.light");
+		Config::getInstance().setThemeType(val);
 	};
-	theme.onUpdate = [](int val) { Config::getInstance().setThemeType(val); };
 	allItems.push_back(theme);
 
 	SettingItem customThemeManager;

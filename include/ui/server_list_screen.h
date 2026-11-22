@@ -3,6 +3,7 @@
 
 #include "discord/types.h"
 #include "screen_manager.h"
+#include "ui/channel_editor.h"
 #include <map>
 #include <memory>
 #include <mutex>
@@ -147,6 +148,26 @@ class ServerListScreen : public Screen {
 		std::vector<std::pair<std::string, bool>> done;
 	};
 	std::shared_ptr<ThreadProbeResults> threadProbeResults = std::make_shared<ThreadProbeResults>();
+
+	// Edit mode: channels can be picked up and moved, then saved in one request.
+	ChannelEditor channelEditor;
+	bool editMode = false;
+	bool editGrabbed = false;
+	bool editDirty = false;
+	bool editConfirmExit = false;
+	std::string editGuildId;
+	struct ReorderResult {
+		std::mutex mutex;
+		bool done = false;
+		bool ok = false;
+		std::string message;
+	};
+	std::shared_ptr<ReorderResult> reorderResult;
+	void enterEditMode();
+	void exitEditMode();
+	void moveGrabbedChannel(int direction);
+	void saveChannelOrder();
+	bool updateEditMode(u32 kDown);
 	std::unordered_map<std::string, bool> archivedThreadsKnown;
 	std::unordered_set<std::string> threadProbesInFlight;
 	void probeArchivedThreads(const std::string &channelId);

@@ -24,6 +24,7 @@ HamburgerMenu::HamburgerMenu()
 void HamburgerMenu::refreshStrings() {
 	items.clear();
 	items.push_back({TR("menu.servers"), MenuItemType::SERVER_LIST});
+	items.push_back({TR("menu.friends"), MenuItemType::FRIENDS});
 	items.push_back({TR("menu.settings"), MenuItemType::SETTINGS});
 	items.push_back({TR("menu.about"), MenuItemType::ABOUT});
 }
@@ -118,6 +119,10 @@ void HamburgerMenu::update() {
 				case MenuItemType::SERVER_LIST:
 					sm.setSelectedGuildId("");
 					sm.setScreen(ScreenType::GUILD_LIST);
+					close();
+					return;
+				case MenuItemType::FRIENDS:
+					sm.pushScreen(ScreenType::FRIENDS);
 					close();
 					return;
 				case MenuItemType::SETTINGS:

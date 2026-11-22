@@ -56,6 +56,9 @@ struct Theme {
 	u32 success;
 	u32 error;
 
+	// Light themes swap a few hard-coded highlight colours for paler ones.
+	bool light = false;
+
 	std::string name;
 	std::string author;
 	std::string description;
@@ -110,8 +113,12 @@ class Config {
 	std::string getSelectedThemeName() const { return selectedThemeName; }
 	void setSelectedThemeName(const std::string &name);
 
+	// 0 Dark, 1 Light, then the built-in presets in ThemePresets.
 	int getThemeType() const { return themeType; }
 	void setThemeType(int type);
+	static int getThemeTypeCount();
+	static std::string getThemeTypeName(int type);
+	bool isLightTheme() const { return getTheme().light; }
 	bool isTypingIndicatorEnabled() const { return typingIndicatorEnabled; }
 	void setTypingIndicatorEnabled(bool enabled);
 	bool isNotificationSoundEnabled() const { return notificationSound; }
@@ -132,7 +139,7 @@ class Config {
 	int getMicVolume() const { return micVolume; }
 	void setMicVolume(int volumePercent);
 
-	// New 3DS hardware H.264 decoding for the video player.
+	// New 3DS hardware H.264 decoding for the video player. Off unless chosen, since it is experimental.
 	bool isHardwareVideoEnabled() const { return hardwareVideo; }
 	void setHardwareVideoEnabled(bool enabled);
 	int getVideoVolume() const { return videoVolume; }
@@ -163,7 +170,7 @@ class Config {
 	bool showHiddenChannels;
 
 	int micVolume;
-	bool hardwareVideo = true;
+	bool hardwareVideo = false;
 	int videoVolume = 100;
 	std::unordered_map<std::string, int> userVolumes;
 
@@ -175,6 +182,8 @@ class Config {
 
 	static Theme getDarkPreset();
 	static Theme getLightPreset();
+	static Theme getPreset(int type);
+	Theme presetTheme;
 };
 
 #endif // CONFIG_H

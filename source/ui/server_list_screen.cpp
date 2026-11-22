@@ -6,6 +6,7 @@
 #include "discord/voice_client.h"
 #include "log.h"
 #include "ui/image_manager.h"
+#include "ui/loading_view.h"
 #include "ui/voice_controls.h"
 #include "ui/voice_popup.h"
 #include "utils/message_utils.h"
@@ -398,6 +399,8 @@ static const int MENU_MARK_READ = INT_MIN + 2;
 static const int MENU_OPEN_LEVELS = INT_MIN + 3;
 static const int MENU_OPEN_CHAT = INT_MIN + 4;
 static const int MENU_OPEN_THREADS = INT_MIN + 5;
+static const int MENU_EDIT_CHANNEL = INT_MIN + 6;
+static const int MENU_EDIT_MODE = INT_MIN + 7;
 
 static bool opensSubmenu(int tw) { return tw == MENU_OPEN_DURATION || tw == MENU_OPEN_LEVELS; }
 
@@ -421,6 +424,17 @@ void ServerListScreen::buildTopLevelMenu(bool currentlyMuted, bool hasUnread) {
 	}
 	muteMenuOptions.push_back(TR("notify.settings"));
 	muteMenuTimeWindows.push_back(MENU_OPEN_LEVELS);
+	if (muteMenuIsChannel) {
+		Discord::DiscordClient &dc = Discord::DiscordClient::getInstance();
+		if (dc.canManageChannel(muteMenuTargetId)) {
+			muteMenuOptions.push_back(TR("channel.menu.edit"));
+			muteMenuTimeWindows.push_back(MENU_EDIT_CHANNEL);
+		}
+		if (dc.canManageGuildChannels(dc.getGuildIdFromChannel(muteMenuTargetId))) {
+			muteMenuOptions.push_back(TR("channel.menu.edit_mode"));
+			muteMenuTimeWindows.push_back(MENU_EDIT_MODE);
+		}
+	}
 	if (hasUnread) {
 		muteMenuOptions.push_back(TR("server.menu.mark_read"));
 		muteMenuTimeWindows.push_back(MENU_MARK_READ);
@@ -1098,6 +1112,20 @@ void ServerListScreen::update() {
 
 	applyThreadProbeResults();
 
+	if (channelEditor.isOpen()) {
+		channelEditor.update(kDown, kHeld);
+		if (channelEditor.consumeSaved()) {
+			refreshChannels();
+		}
+		return;
+	}
+	if (channelEditor.consumeSaved()) {
+		refreshChannels();
+	}
+	if (editMode && state == State::SELECTING_CHANNEL && updateEditMode(kDown)) {
+		return;
+	}
+
 	if (isMuteMenuOpen) {
 		if (kDown & KEY_DOWN && muteMenuIndex < (int)muteMenuOptions.size() - 1) {
 			muteMenuIndex++;
@@ -1134,6 +1162,12 @@ void ServerListScreen::update() {
 					isMuteMenuOpen = false;
 					ScreenManager::getInstance().setForumChannelId(muteMenuTargetId);
 					ScreenManager::getInstance().pushScreen(ScreenType::FORUM_CHANNEL);
+				} else if (tw == MENU_EDIT_CHANNEL) {
+					isMuteMenuOpen = false;
+					channelEditor.show(Discord::DiscordClient::getInstance().getChannel(muteMenuTargetId));
+				} else if (tw == MENU_EDIT_MODE) {
+					isMuteMenuOpen = false;
+					enterEditMode();
 				} else if (tw == MENU_MARK_READ) {
 					isMuteMenuOpen = false;
 					if (muteMenuIsChannel) {
@@ -1392,27 +1426,7 @@ void ServerListScreen::renderTop(C3D_RenderTarget *target) {
 			return;
 		}
 
-		float centerX = 200.0f;
-		float centerY = 120.0f;
-
-		C3D_Tex *discordTex = UI::ImageManager::getInstance().getLocalImage("romfs:/discord.png", true);
-		if (discordTex) {
-			UI::ImageManager::ImageInfo info = UI::ImageManager::getInstance().getImageInfo("romfs:/discord.png");
-			Tex3DS_SubTexture subtex;
-			subtex.width = (u16)info.originalW;
-			subtex.height = (u16)info.originalH;
-			subtex.left = 0.0f;
-			subtex.top = 0.0f;
-			subtex.right = (float)info.originalW / discordTex->width;
-			subtex.bottom = (float)info.originalH / discordTex->height;
-			C2D_Image img = {discordTex, &subtex};
-			float scale = 90.0f / (float)info.originalW;
-			float rad = (loadingAngle - 90.0f) * M_PI / 180.0f;
-			C2D_DrawImageAtRotated(img, centerX, centerY, 0.6f, rad, nullptr, scale, scale);
-		}
-
-		drawCenteredText(centerY + 60.0f, 0.5f, 0.5f, 0.5f, ScreenManager::colorTextMuted(),
-		                 Core::I18n::getInstance().get("common.loading"), 400.0f);
+		LoadingView::drawTop();
 		return;
 	}
 
@@ -1484,6 +1498,19 @@ void ServerListScreen::renderTop(C3D_RenderTarget *target) {
 	if (isMuteMenuOpen) {
 		drawMuteMenu();
 	}
+	channelEditor.render();
+
+	if (editConfirmExit) {
+		const float w = 300.0f, h = 84.0f, x = 50.0f, y = 78.0f;
+		drawOverlay(0.85f);
+		drawPopupBackground(x, y, w, h, 0.9f, 12.0f);
+		drawCenteredText(y + 14.0f, 0.92f, 0.48f, 0.48f, ScreenManager::colorText(), TR("channel.edit_mode.unsaved"),
+		                 400.0f);
+		drawCenteredText(y + h - 26.0f, 0.92f, 0.42f, 0.42f, ScreenManager::colorTextMuted(),
+		                 "\uE003: " + TR("common.save") + "  \uE000: " + TR("channel.edit_mode.discard") + "  \uE001: " +
+		                     TR("common.cancel"),
+		                 400.0f);
+	}
 }
 
 void ServerListScreen::drawChannelList(float x, float y, float alpha) {
@@ -1493,6 +1520,12 @@ void ServerListScreen::drawChannelList(float x, float y, float alpha) {
 		C2D_DrawRectSolid(x, y + headerH - 1.0f, 0.43f, 400.0f - x, 1.0f, ScreenManager::colorHeaderBorder());
 
 		float textX = x + 8.0f;
+		if (editMode) {
+			const std::string label = TR("channel.edit_mode.title");
+			const float w = measureText(label, 0.45f, 0.45f) + 16.0f;
+			drawRoundedRect(400.0f - w - 6.0f, y + 4.0f, 0.5f, w, 18.0f, 9.0f, ScreenManager::colorAccent());
+			drawText(400.0f - w + 2.0f, y + 5.5f, 0.51f, 0.45f, 0.45f, ScreenManager::colorWhite(), label);
+		}
 		drawRichText(textX, y + 4.0f, 0.5f, 0.65f, 0.65f, ScreenManager::colorText(), listItems[selectedIndex].name);
 	}
 
@@ -1620,6 +1653,16 @@ void ServerListScreen::drawChannelList(float x, float y, float alpha) {
 
 		if (isSelected) {
 			drawRoundedRect(x + 4, currentY, 0.5f, 400 - x - 8, rowHeight, 4.0f, ScreenManager::colorBackgroundLight());
+			if (editMode) {
+				const u32 accent = ScreenManager::colorAccent();
+				if (editGrabbed) {
+					drawRoundedRect(x + 4, currentY, 0.505f, 400 - x - 8, rowHeight, 4.0f,
+					                (accent & 0x00FFFFFF) | 0x60000000);
+				}
+				C2D_DrawRectSolid(x + 4, currentY + 3.0f, 0.51f, 3.0f, rowHeight - 6.0f, accent);
+				const std::string grip = editGrabbed ? "\uE079\uE07A" : "\uE000";
+				drawText(400.0f - 28.0f, currentY + 4.0f, 0.52f, 0.42f, 0.42f, accent, grip);
+			}
 		}
 
 		if (chUnread && !isCategory) {
@@ -2113,6 +2156,11 @@ void ServerListScreen::renderBottom(C3D_RenderTarget *target) {
 	C2D_SceneBegin(target);
 	C2D_TargetClear(target, ScreenManager::colorBackgroundDark());
 
+	if (listItems.empty() && Discord::DiscordClient::getInstance().getState() != Discord::ConnectionState::READY) {
+		LoadingView::drawBottom();
+		return;
+	}
+
 	if (VoiceControls::visible()) {
 		drawVoicePanel();
 		return;
@@ -2248,6 +2296,170 @@ void ServerListScreen::renderBottom(C3D_RenderTarget *target) {
 
 	drawVoiceStatus();
 	VoiceControls::draw(VOICE_BTN_X, VOICE_BTN_Y);
+}
+
+void ServerListScreen::enterEditMode() {
+	if (selectedIndex < 0 || selectedIndex >= (int)listItems.size() || listItems[selectedIndex].isDm) {
+		return;
+	}
+	editMode = true;
+	editGrabbed = false;
+	editDirty = false;
+	editConfirmExit = false;
+	editGuildId = listItems[selectedIndex].id;
+	ScreenManager::getInstance().showToast(TR("channel.edit_mode.help"));
+}
+
+void ServerListScreen::exitEditMode() {
+	editMode = false;
+	editGrabbed = false;
+	editConfirmExit = false;
+	if (editDirty) {
+		editDirty = false;
+		refreshChannels();
+	}
+}
+
+void ServerListScreen::moveGrabbedChannel(int direction) {
+	const int i = selectedChannelIndex;
+	if (i < 0 || i >= (int)sortedChannels.size() || sortedChannels[i].type == 4) {
+		return;
+	}
+	const int j = i + direction;
+	if (j < 0 || j >= (int)sortedChannels.size()) {
+		return;
+	}
+	Discord::Channel &moving = sortedChannels[i];
+	if (sortedChannels[j].type == 4) {
+		if (direction > 0) {
+			// Down past a category header: first channel in that category.
+			moving.parent_id = sortedChannels[j].id;
+		} else {
+			// Up past its own header: last channel of the category above, or no category at all.
+			std::string parent;
+			for (int k = j - 1; k >= 0; k--) {
+				if (sortedChannels[k].type == 4) {
+					parent = sortedChannels[k].id;
+					break;
+				}
+			}
+			moving.parent_id = parent;
+		}
+	}
+	std::swap(sortedChannels[i], sortedChannels[j]);
+	selectedChannelIndex = j;
+	editDirty = true;
+	ensureChannelVisible();
+}
+
+void ServerListScreen::saveChannelOrder() {
+	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
+	std::vector<Discord::DiscordClient::ChannelPosition> changes;
+	std::map<std::string, int> next;
+	std::string parent;
+	for (const auto &ch : sortedChannels) {
+		if (ch.type == 4) {
+			parent = ch.id;
+			continue;
+		}
+		const int position = next[parent]++;
+		const Discord::Channel original = client.getChannel(ch.id);
+		const bool parentChanged = original.parent_id != parent;
+		if (parentChanged || original.position != position) {
+			changes.push_back({ch.id, position, parent, parentChanged});
+		}
+	}
+	if (changes.empty()) {
+		exitEditMode();
+		return;
+	}
+	reorderResult = std::make_shared<ReorderResult>();
+	std::shared_ptr<ReorderResult> pending = reorderResult;
+	client.reorderChannels(editGuildId, changes, [pending](bool ok, const std::string &message) {
+		std::lock_guard<std::mutex> lock(pending->mutex);
+		pending->done = true;
+		pending->ok = ok;
+		pending->message = message;
+		Utils::requestRedraw();
+	});
+	ScreenManager::getInstance().showToast(TR("channel.edit_mode.saving"));
+}
+
+bool ServerListScreen::updateEditMode(u32 kDown) {
+	if (reorderResult) {
+		bool done = false;
+		bool ok = false;
+		std::string message;
+		{
+			std::lock_guard<std::mutex> lock(reorderResult->mutex);
+			done = reorderResult->done;
+			ok = reorderResult->ok;
+			message = reorderResult->message;
+		}
+		if (!done) {
+			return true;
+		}
+		reorderResult.reset();
+		if (ok) {
+			ScreenManager::getInstance().showToast(TR("channel.edit_mode.saved"));
+			editDirty = false;
+			exitEditMode();
+			refreshChannels();
+		} else {
+			ScreenManager::getInstance().showToast(Core::I18n::format(TR("channel.edit.failed"), message));
+		}
+		return true;
+	}
+
+	if (editConfirmExit) {
+		if (kDown & KEY_Y) {
+			editConfirmExit = false;
+			saveChannelOrder();
+		} else if (kDown & KEY_A) {
+			exitEditMode();
+		} else if (kDown & KEY_B) {
+			editConfirmExit = false;
+		}
+		return true;
+	}
+
+	if (kDown & KEY_B) {
+		if (editGrabbed) {
+			editGrabbed = false;
+		} else if (editDirty) {
+			editConfirmExit = true;
+		} else {
+			exitEditMode();
+		}
+		return true;
+	}
+	if (kDown & KEY_Y) {
+		editGrabbed = false;
+		saveChannelOrder();
+		return true;
+	}
+	if (kDown & KEY_A) {
+		if (selectedChannelIndex >= 0 && selectedChannelIndex < (int)sortedChannels.size() &&
+		    sortedChannels[selectedChannelIndex].type != 4) {
+			editGrabbed = !editGrabbed;
+		}
+		return true;
+	}
+	if (kDown & KEY_X) {
+		if (selectedChannelIndex >= 0 && selectedChannelIndex < (int)sortedChannels.size()) {
+			const auto &ch = sortedChannels[selectedChannelIndex];
+			if (Discord::DiscordClient::getInstance().canManageChannel(ch.id)) {
+				channelEditor.show(Discord::DiscordClient::getInstance().getChannel(ch.id));
+			}
+		}
+		return true;
+	}
+	if (editGrabbed && (kDown & (KEY_UP | KEY_DOWN))) {
+		moveGrabbedChannel((kDown & KEY_DOWN) ? 1 : -1);
+		return true;
+	}
+	// Plain navigation falls through to the normal channel list handling.
+	return false;
 }
 
 } // namespace UI

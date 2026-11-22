@@ -9,6 +9,7 @@
 #include "ui/disclaimer_screen.h"
 #include "ui/emoji_manager.h"
 #include "ui/forum_screen.h"
+#include "ui/friends_screen.h"
 #include "ui/image_manager.h"
 #include "ui/login_screen.h"
 #include "ui/message_screen.h"
@@ -341,6 +342,9 @@ void ScreenManager::setScreen(ScreenType type) {
 		break;
 	case ScreenType::THEME_MANAGER:
 		currentScreen = std::make_unique<ThemeManagerScreen>();
+		break;
+	case ScreenType::FRIENDS:
+		currentScreen = std::make_unique<FriendsScreen>();
 		break;
 	}
 

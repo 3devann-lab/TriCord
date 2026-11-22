@@ -65,6 +65,11 @@ struct LoginResult {
 
 using LoginCallback = std::function<void(const LoginResult &result)>;
 using FavoriteGifsCallback = std::function<void(bool success, const std::vector<FavoriteGif> &gifs)>;
+using RelationshipsCallback = std::function<void(bool success, const std::vector<Relationship> &relationships)>;
+// message is Discord's own explanation when it gives one.
+using ActionCallback = std::function<void(bool success, const std::string &message)>;
+using ChannelCallback = std::function<void(const std::string &channelId)>;
+using CommandsCallback = std::function<void(bool success, const std::vector<ApplicationCommand> &commands)>;
 
 struct UploadRequest {
 	std::string channelId;
@@ -220,6 +225,42 @@ class DiscordClient {
 	                SendMessageCallback cb);
 	// The largest attachment Discord accepts from this account.
 	long long getUploadLimitBytes();
+	// Slash commands usable in a channel: the guild's (or DM's) bots plus user-installed apps.
+	void fetchApplicationCommands(const std::string &channelId, CommandsCallback cb);
+	void sendApplicationCommand(const std::string &channelId, const ApplicationCommand &command,
+	                            const std::vector<CommandValue> &options, const std::string &nonce, SuccessCallback cb);
+
+	// Friends and requests. The list is cached, so menus can tell a friend from a stranger.
+	void fetchRelationships(RelationshipsCallback cb = nullptr);
+	std::vector<Relationship> getRelationships();
+	int getRelationshipType(const std::string &userId);
+	void sendFriendRequest(const std::string &username, ActionCallback cb);
+	// Sends a request to, or accepts one from, a user picked by id.
+	void addFriend(const std::string &userId, ActionCallback cb);
+	// Unfriends, declines a request, or cancels one.
+	void removeRelationship(const std::string &userId, ActionCallback cb);
+	// Opens (or creates) the DM with a user; channelId is empty on failure.
+	void openDirectMessage(const std::string &userId, ChannelCallback cb);
+
+	// Manage Channels, for editing and reordering.
+	bool canManageChannel(const std::string &channelId);
+	bool canManageGuildChannels(const std::string &guildId);
+	struct ChannelEdit {
+		std::string name;
+		std::string topic;
+		int slowmode = 0;
+		bool nsfw = false;
+	};
+	void editChannel(const std::string &channelId, const ChannelEdit &edit, ActionCallback cb);
+	struct ChannelPosition {
+		std::string id;
+		int position = 0;
+		std::string parentId;
+		bool setParent = false;
+	};
+	void reorderChannels(const std::string &guildId, const std::vector<ChannelPosition> &positions,
+	                     ActionCallback cb);
+
 	// Reads the favorite GIFs from the frecency settings proto, most recent first.
 	void fetchFavoriteGifs(FavoriteGifsCallback cb);
 	// A small animated GIF to show in place of a favorite, which is usually an MP4. Empty when none is known.
@@ -507,6 +548,9 @@ class DiscordClient {
 	// The gateway is the only source of these: REST history never returns them.
 	std::map<std::string, std::vector<Message>> ephemeralMessages;
 	std::map<std::string, UserProfile> profileCache;
+	std::vector<Relationship> relationships;
+	bool relationshipsLoaded = false;
+	void applyChannelPositions(const std::string &guildId, const std::vector<ChannelPosition> &positions);
 };
 
 } // namespace Discord

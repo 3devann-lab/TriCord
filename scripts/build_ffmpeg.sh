@@ -47,6 +47,9 @@ grep -q '^OBJS-$(CONFIG_H264_SEI).*aom_film_grain.o' libavcodec/Makefile
 
 ARCH_FLAGS="-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft"
 
+# FFmpeg's VFP code runs the ARM11's VFP in vector mode, which the 3DS kernel's
+# VFP context handling is not built for; the compiler's scalar VFP code is safe.
+#
 # Only what Discord videos need: MP4/MOV and WebM containers, H.264/VP8 video,
 # and the audio codecs those carry. HEVC and VP9 are far beyond the 3DS CPU.
 ./configure \
@@ -72,6 +75,7 @@ ARCH_FLAGS="-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft"
 	--disable-w32threads \
 	--disable-os2threads \
 	--disable-neon \
+	--disable-vfp \
 	--enable-static \
 	--disable-shared \
 	--disable-everything \

@@ -38,6 +38,19 @@ std::string cacheDirectory() { return std::string(CONFIG_DIR_PATH) + "/cache"; }
 
 std::string downloadsDirectory() { return std::string(CONFIG_DIR_PATH) + "/downloads"; }
 
+// Present while hardware decoding runs. Finding it when a player opens means the last one never
+// closed, i.e. the app went down mid-video, so hardware decoding is the first suspect.
+std::string crashGuardPath() { return cacheDirectory() + "/video.guard"; }
+
+void setCrashGuard(bool on) {
+	if (on) {
+		Utils::File::ensureDirectory(cacheDirectory());
+		Utils::File::writeFile(crashGuardPath(), std::string("hw"));
+	} else {
+		remove(crashGuardPath().c_str());
+	}
+}
+
 std::string extensionFor(const std::string &url, const std::string &fileName) {
 	std::string ext = Utils::File::extension(fileName);
 	if (ext.empty()) {
@@ -64,6 +77,17 @@ void drawPlayIcon(float cx, float cy, float size, u32 color, bool paused) {
 VideoPlayer::VideoPlayer(const Source &source) : source(source), saveState(std::make_shared<std::atomic<int>>(0)) {
 	hardware = Config::getInstance().isHardwareVideoEnabled();
 	volume = Config::getInstance().getVideoVolume() / 100.0f;
+
+	if (Utils::File::exists(crashGuardPath())) {
+		Logger::log("[Video] The last hardware-decoded video did not close cleanly; turning hardware decoding off");
+		setCrashGuard(false);
+		if (hardware) {
+			hardware = false;
+			Config::getInstance().setHardwareVideoEnabled(false);
+			showOsd(TR("video.hw_disabled_after_crash"));
+			osdTimer = 300;
+		}
+	}
 
 	if (!Media::VideoDecoder::available()) {
 		stage = Stage::FAILED;
@@ -95,6 +119,7 @@ VideoPlayer::~VideoPlayer() {
 		progress->cancel = true;
 	}
 	decoder.stop();
+	setCrashGuard(false);
 	if (saveThread.joinable()) {
 		saveThread.join();
 	}
@@ -160,6 +185,7 @@ void VideoPlayer::startPlayback(double at) {
 		GSPGPU_FlushDataCache(tex->data, tex->size);
 	}
 
+	setCrashGuard(hardware && Media::VideoDecoder::hardwareAvailable());
 	decoder.start(path, at, hardware, source.loop);
 	decoder.setVolume(volume);
 }

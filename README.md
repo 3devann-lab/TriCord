@@ -30,6 +30,11 @@ This software is provided **"as is"**, and you use it at your own risk. The use 
 - **Take a photo** with the inner or outer camera and send it
 - Full-screen image viewer with zoom and pan
 - Save attachments to the SD card (`sdmc:/3ds/TriCord/downloads`)
+- **Bot (slash) commands**: pick a command, fill in its options, run it (or type `/name` in the message box)
+- **Friends**: add by username, accept or decline requests, remove friends, unblock, and message them
+- **Edit channels** you have Manage Channels on (name, topic, slowmode, age restriction), and an **edit mode** to reorder a server's channels
+- Jump to the message a reply answers
+- 28 built-in themes, previewed live in Settings, plus custom themes from the SD card
 - Multi-account support
 - Server, channel, and forum thread navigation
 - Customizable [themes](THEME_FORMAT.md) and internationalization (EN/JA)
@@ -116,12 +121,18 @@ Every push builds the CIA and 3DSX in the `devkitpro/devkitarm` container (`.git
 
 **Message View**
 - D-Pad: Scroll | B: Back | X: Open Menu | Y: Text input
-- R (or the + button): Attach a photo/video from the SD card, a favorite GIF, or a camera photo
-- A on a video: Play it | X menu: View Image, Play Video, Save to SD Card
+- R (or the + button): Attach a photo/video from the SD card, a favorite GIF, a camera photo, or run a bot command
+- A on a video: Play it | X menu: View Image, Play Video, Save to SD Card, Jump to Original Message, Add/Remove Friend, Message
+
+**Channel List (edit mode, from a channel's X menu)**
+- A: Pick up / drop a channel | Up/Down: Move it | X: Edit channel | Y: Save order | B: Leave
+
+**Friends**
+- L/R: Switch tab | A: Message / Accept | X: Remove / Decline / Unblock | Y: Add friend
 
 **Video Player**
 - A: Play/Pause | Left/Right: ±5s | L/R: ±30s | Up/Down: Volume | Touch the bar: Seek
-- X: Switch hardware/software decoding (New 3DS, H.264) | Y: Save to SD card | B: Close
+- X: Switch hardware/software decoding (New 3DS, H.264; hardware is experimental and off by default) | Y: Save to SD card | B: Close
 
 **File Browser**
 - A: Open folder / choose file | B: Up a folder | Y: Show all files / media only | X: Close

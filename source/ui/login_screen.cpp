@@ -1,4 +1,5 @@
 #include "ui/login_screen.h"
+#include "ui/loading_view.h"
 #include "config.h"
 #include "core/i18n.h"
 #include "discord/discord_client.h"
@@ -13,6 +14,15 @@
 #include <cmath>
 
 namespace UI {
+
+namespace {
+// Every step between starting the connection and READY shows the loading screen.
+bool isConnectingState(Discord::ConnectionState state) {
+	return state == Discord::ConnectionState::CONNECTING || state == Discord::ConnectionState::CONNECTED_WS ||
+	       state == Discord::ConnectionState::IDENTIFYING || state == Discord::ConnectionState::AUTHENTICATING;
+}
+} // namespace
+
 
 namespace {
 constexpr int ERROR_ACCOUNT_SCHEDULED_FOR_DELETION = 20011;
@@ -126,8 +136,7 @@ void LoginScreen::update() {
 	}
 
 	auto state = client.getState();
-	bool isLoading =
-	    (state == Discord::ConnectionState::CONNECTING || state == Discord::ConnectionState::AUTHENTICATING);
+	bool isLoading = isConnectingState(state);
 
 	if (isLoading) {
 		animTimer += 1.0f / 60.0f;
@@ -281,42 +290,10 @@ void LoginScreen::renderTop(C3D_RenderTarget *target) {
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	auto state = client.getState();
-	bool isLoading =
-	    (state == Discord::ConnectionState::CONNECTING || state == Discord::ConnectionState::AUTHENTICATING);
-
-	float centerX = TOP_SCREEN_WIDTH / 2.0f;
-	float centerY = TOP_SCREEN_HEIGHT / 2.0f;
+	bool isLoading = isConnectingState(state);
 
 	if (isLoading) {
-		C3D_Tex *discordTex = UI::ImageManager::getInstance().getLocalImage("romfs:/discord.png", true);
-		if (discordTex) {
-			UI::ImageManager::ImageInfo info = UI::ImageManager::getInstance().getImageInfo("romfs:/discord.png");
-			Tex3DS_SubTexture subtex;
-			subtex.width = (u16)info.originalW;
-			subtex.height = (u16)info.originalH;
-			subtex.left = 0.0f;
-			subtex.top = 0.0f;
-			subtex.right = (float)info.originalW / discordTex->width;
-			subtex.bottom = (float)info.originalH / discordTex->height;
-			C2D_Image img = {discordTex, &subtex};
-			float maxSpinnerSize = 90.0f;
-			float scale = 1.0f;
-			if (info.originalW > 0 && info.originalH > 0) {
-				float scaleW = maxSpinnerSize / (float)info.originalW;
-				float scaleH = maxSpinnerSize / (float)info.originalH;
-				scale = (scaleW < scaleH) ? scaleW : scaleH;
-			}
-			float rad = (loadingAngle - 90.0f) * M_PI / 180.0f;
-			C2D_DrawImageAtRotated(img, centerX, centerY, 0.6f, rad, nullptr, scale, scale);
-		} else {
-			drawLoadingSpinner(centerX, centerY, 20.0f);
-		}
-
-		std::string status = Discord::DiscordClient::getInstance().getStatusMessage();
-		if (status.empty()) {
-			status = Core::I18n::getInstance().get("login.status.authenticating");
-		}
-		drawCenteredText(centerY + 60.0f, 0.5f, 0.5f, 0.5f, ScreenManager::colorText(), status, TOP_SCREEN_WIDTH);
+		LoadingView::drawTop();
 		return;
 	}
 
@@ -365,23 +342,11 @@ void LoginScreen::renderBottom(C3D_RenderTarget *target) {
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	auto state = client.getState();
-	bool isLoading =
-	    (state == Discord::ConnectionState::CONNECTING || state == Discord::ConnectionState::AUTHENTICATING);
+	bool isLoading = isConnectingState(state);
 
 	if (isLoading) {
-		std::string warnText = TR("login.loading.many_servers_warning");
-		std::vector<std::string> warnLines;
-		std::string::size_type pos = 0, found;
-		while ((found = warnText.find('\n', pos)) != std::string::npos) {
-			warnLines.push_back(warnText.substr(pos, found - pos));
-			pos = found + 1;
-		}
-		warnLines.push_back(warnText.substr(pos));
-		float warnY = BOTTOM_SCREEN_HEIGHT - 10.0f - (float)warnLines.size() * 14.0f;
-		for (const auto &line : warnLines) {
-			drawCenteredText(warnY, 0.5f, 0.40f, 0.40f, ScreenManager::colorTextMuted(), line, BOTTOM_SCREEN_WIDTH);
-			warnY += 14.0f;
-		}
+		LoadingView::drawBottom();
+		return;
 	}
 
 	if (!isLoading) {
@@ -491,10 +456,7 @@ void LoginScreen::startQRLogin() {
 	}
 }
 
-bool LoginScreen::isAnimating() const {
-	auto state = Discord::DiscordClient::getInstance().getState();
-	return state == Discord::ConnectionState::CONNECTING || state == Discord::ConnectionState::AUTHENTICATING;
-}
+bool LoginScreen::isAnimating() const { return isConnectingState(Discord::DiscordClient::getInstance().getState()); }
 
 void LoginScreen::onStateChange(Discord::RemoteAuthState state, const std::string &info) {
 	Utils::requestRedraw();
