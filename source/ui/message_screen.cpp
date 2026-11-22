@@ -5413,6 +5413,7 @@ void MessageScreen::switchChannel(int direction) {
 	bool isPrivate = guildId.empty() || guildId == "DM";
 
 	std::vector<Discord::Channel> ordered;
+	std::unique_lock<std::recursive_mutex> clientLock(client.getMutex());
 	if (isPrivate) {
 		ordered = client.getPrivateChannels();
 		std::sort(ordered.begin(), ordered.end(), [](const Discord::Channel &a, const Discord::Channel &b) {
@@ -5456,6 +5457,7 @@ void MessageScreen::switchChannel(int direction) {
 		return;
 	}
 
+	clientLock.unlock();
 	if (!isPrivate) {
 		ScreenManager::getInstance().setLastChannelIndex(guildId, target);
 	}

@@ -36,6 +36,18 @@ This software is provided **"as is"**, and you use it at your own risk. The use 
 - Jump to the message a reply answers
 - **Online status and activity** (Playing, Listening to Spotify, custom status...) in Friends, DMs, profiles and on chat avatars
 - **Google DNS fallback** for networks that block Discord: turns on after 20 seconds without a connection, by holding L+R on the loading screen, or in Settings > Advanced
+- **Voice messages**: record up to two minutes and send them as real Discord voice messages; play voice messages and audio files (MP3, OGG, M4A, WAV, FLAC) with a waveform view
+- **Draw Something**: doodle on the touch screen with colours, brush sizes, eraser and undo, and send it as a picture
+- **Pinned messages** and **message search** (this channel or the whole server) with jump-to
+- **Member list** grouped by role with status and activity; message or friend people from it
+- **Invites**: open discord.gg links with a server preview and Join, or create invites with a QR code
+- **Discord timestamps** (`<t:...>`) shown as real dates and times, including "in 3 hours"
+- **Notification light** blinks for DMs and mentions, and DMs/mentions can go to the HOME Menu's Notifications
+- **Stay connected with the lid closed**: screens off, status set to Idle, back to Online when opened
+- **Battery and Wi-Fi icons** in the bottom screen's header
+- **Saves images and recent messages to the SD card**, so channels open instantly and use less data
+- **In-app updates**: Settings > Check for Updates installs the newest `TriCord.cia` from this repository
+- New 3DS controls: C-stick scrolling, ZL/ZR to switch channels or servers
 - 28 built-in themes, previewed live in Settings, plus custom themes from the SD card
 - Multi-account support
 - Server, channel, and forum thread navigation
@@ -49,6 +61,7 @@ Check out the [TriCord-Themes](https://github.com/2b-zipper/TriCord-Themes) repo
 1. Download the latest release (CIA or 3DSX). The newest build from GitHub Actions is always at the root of this repository as [`TriCord.cia`](TriCord.cia)
 2. Install via FBI (CIA) or place in `/3ds/` (3DSX)
 3. Launch and log in with QR code or email/password
+4. Later builds can be installed from inside the app: Settings > Check for Updates
 
 ### Login Methods
 
@@ -86,7 +99,7 @@ Output: `TriCord.3dsx`, `TriCord.cia`, `TriCord.elf`. Use `make 3dsx` to skip th
 Without `scripts/build_ffmpeg.sh`, TriCord still builds; the video player then says playback isn't included.
 
 ### GitHub Actions
-Every push builds the CIA and 3DSX in the `devkitpro/devkitarm` container (`.github/workflows/build.yml`), uploads both as a build artifact, and commits `TriCord.cia` to the root of the branch that was pushed.
+Every push builds the CIA and 3DSX in the `devkitpro/devkitarm` container (`.github/workflows/build.yml`), uploads both as a build artifact, and commits `TriCord.cia` to the root of the branch that was pushed. It stamps each build with its commit in `romfs/build_info.json`, which the in-app updater compares with the newest `TriCord.cia` on `main`.
 
 ## Libraries
 
@@ -120,11 +133,23 @@ Every push builds the CIA and 3DSX in the `devkitpro/devkitarm` container (`.git
 
 **DM/Server/Channel List**
 - D-Pad: Navigate | A: Select | B: Back
+- New 3DS: C-stick scrolls | ZL/ZR: Previous/next server
 
 **Message View**
 - D-Pad: Scroll | B: Back | X: Open Menu | Y: Text input
-- R (or the + button): Attach a photo/video from the SD card, a favorite GIF, a camera photo, or run a bot command
-- A on a video: Play it | X menu: View Image, Play Video, Save to SD Card, Jump to Original Message, Add/Remove Friend, Message
+- R (or the + button): Attach a photo/video from the SD card, a favorite GIF, a camera photo, a voice message or a drawing, or run a bot command
+- L: Channel menu: Search Messages, Pinned Messages, Members, Invite People, Jump to Newest
+- A on a video, audio file or voice message: Play it | X menu: View Image, Play, Save to SD Card, Open Invite, Jump to Original Message, Add/Remove Friend, Message
+- New 3DS: C-stick scrolls, C-stick right jumps to the newest messages, ZL/ZR open the previous/next channel
+
+**Voice Message**
+- A: Record / Stop, then A: Send | X: Listen | Y: Redo | B: Discard
+
+**Draw Something**
+- Draw on the bottom screen | L/R: Colour | Up/Down: Brush size | X: Eraser | Y: Undo | Left (twice): Clear | A: Send | B: Cancel
+
+**Search / Pinned Messages / Members**
+- Up/Down: Move | A: Jump to the message (Members: message them) | Y: New search (Members: add friend) | X: This channel / whole server | B: Close
 
 **Channel List (edit mode, from a channel's X menu)**
 - A: Pick up / drop a channel | Up/Down: Move it | X: Edit channel | Y: Save order | B: Leave
