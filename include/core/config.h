@@ -145,6 +145,13 @@ class Config {
 	int getVideoVolume() const { return videoVolume; }
 	void setVideoVolume(int volumePercent);
 
+	// L+R (debug log) and R+L (stats) overlays.
+	bool isDebugShortcutsEnabled() const { return debugShortcuts; }
+	void setDebugShortcutsEnabled(bool enabled);
+	// Resolve Discord's hosts through Google DNS instead of the network's own resolver.
+	bool isGoogleDnsEnabled() const { return googleDns; }
+	void setGoogleDnsEnabled(bool enabled);
+
 	int getUserVolume(const std::string &userId) const;
 	void setUserVolume(const std::string &userId, int volumePercent);
 
@@ -172,6 +179,8 @@ class Config {
 	int micVolume;
 	bool hardwareVideo = false;
 	int videoVolume = 100;
+	bool debugShortcuts = true;
+	bool googleDns = false;
 	std::unordered_map<std::string, int> userVolumes;
 
 	bool customThemeEnabled;

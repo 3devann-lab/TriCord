@@ -1,4 +1,5 @@
 #include "network/websocket_client.h"
+#include "network/dns.h"
 #include "config.h"
 #include "log.h"
 #include "network/tls.h"
@@ -166,8 +167,17 @@ bool WebSocketClient::openSocket(Tls &session, uint64_t deadline) {
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
 
+	// With Google DNS on, the address comes from there; TLS below still verifies the real host name.
+	std::string lookup = host;
+	if (Dns::isEnabled()) {
+		const std::string ip = Dns::resolve(host);
+		if (!ip.empty()) {
+			lookup = ip;
+		}
+	}
+
 	addrinfo *addresses = nullptr;
-	if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &addresses) != 0) {
+	if (getaddrinfo(lookup.c_str(), std::to_string(port).c_str(), &hints, &addresses) != 0) {
 		Logger::log("[WS] Failed to resolve %s", host.c_str());
 		return false;
 	}

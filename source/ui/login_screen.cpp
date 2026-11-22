@@ -139,6 +139,7 @@ void LoginScreen::update() {
 	bool isLoading = isConnectingState(state);
 
 	if (isLoading) {
+		LoadingView::update();
 		animTimer += 1.0f / 60.0f;
 		if (animTimer >= 1.5f) {
 			animTimer = 0.0f;

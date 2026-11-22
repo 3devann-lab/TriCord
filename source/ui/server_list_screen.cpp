@@ -1027,6 +1027,7 @@ void ServerListScreen::update() {
 			rebuildList();
 			refreshChannels();
 		} else if (client.getState() != Discord::ConnectionState::READY) {
+			LoadingView::update();
 			animTimer += 1.0f / 60.0f;
 			if (animTimer >= 1.5f) {
 				animTimer = 0.0f;

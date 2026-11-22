@@ -49,6 +49,8 @@ struct HttpRequest {
 	// The response body goes to this file instead of HttpResponse::body.
 	std::string downloadPath = {};
 	std::shared_ptr<TransferProgress> progress = nullptr;
+	// "host:port:address", which bypasses DNS for this request; used for the DNS-over-HTTPS lookups themselves.
+	std::string resolveOverride = {};
 };
 
 // What a transfer holds on to until it finishes.
@@ -56,6 +58,7 @@ struct TransferResources {
 	curl_slist *headers = nullptr;
 	curl_mime *mime = nullptr;
 	FILE *file = nullptr;
+	curl_slist *resolve = nullptr;
 
 	void release();
 };

@@ -1,6 +1,7 @@
 #include "network/http_client.h"
 #include "config.h"
 #include "log.h"
+#include "network/dns.h"
 #include "network/network_manager.h"
 #include "network/tls.h"
 #include <algorithm>
@@ -288,6 +289,8 @@ void initHttpDefaults() {
 void TransferResources::release() {
 	curl_slist_free_all(headers);
 	headers = nullptr;
+	curl_slist_free_all(resolve);
+	resolve = nullptr;
 	if (mime) {
 		curl_mime_free(mime);
 		mime = nullptr;
@@ -321,6 +324,20 @@ TransferResources prepareTransfer(CURL *easy, const HttpRequest &request, HttpRe
 	curl_easy_setopt(easy, CURLOPT_CAINFO, nullptr);
 	curl_easy_setopt(easy, CURLOPT_CAPATH, nullptr);
 	curl_easy_setopt(easy, CURLOPT_SSL_CTX_FUNCTION, useSharedCaChain);
+
+	std::string resolveEntry = request.resolveOverride;
+	if (resolveEntry.empty() && Dns::isEnabled()) {
+		const std::string host = Dns::hostOf(request.url);
+		const std::string ip = Dns::resolve(host);
+		if (!ip.empty() && ip != host) {
+			const char *port = request.url.rfind("http://", 0) == 0 ? ":80:" : ":443:";
+			resolveEntry = host + port + ip;
+		}
+	}
+	if (!resolveEntry.empty()) {
+		resources.resolve = curl_slist_append(nullptr, resolveEntry.c_str());
+		curl_easy_setopt(easy, CURLOPT_RESOLVE, resources.resolve);
+	}
 
 	const std::string &method = request.method;
 	if (!request.multipart.empty()) {

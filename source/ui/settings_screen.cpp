@@ -1,5 +1,6 @@
 #include "ui/settings_screen.h"
 #include "utils/system_utils.h"
+#include "network/dns.h"
 #include "core/config.h"
 #include "core/i18n.h"
 #include "log.h"
@@ -225,6 +226,34 @@ void SettingsScreen::onEnter() {
 		hardwareVideo.onUpdate = [](int val) { Config::getInstance().setHardwareVideoEnabled(val == 1); };
 		allItems.push_back(hardwareVideo);
 	}
+
+	// ADVANCED
+	allItems.push_back({TR("settings.section.advanced"), "", SettingItemType::SECTION_HEADER});
+
+	SettingItem googleDns;
+	googleDns.label = TR("settings.google_dns");
+	googleDns.description = TR("settings.desc.google_dns");
+	googleDns.type = SettingItemType::TOGGLE;
+	googleDns.value = Config::getInstance().isGoogleDnsEnabled() ? 1 : 0;
+	googleDns.min = 0;
+	googleDns.max = 1;
+	googleDns.valueFormatter = [](int val) { return (val == 1) ? TR("common.enabled") : TR("common.disabled"); };
+	googleDns.onUpdate = [](int val) {
+		Config::getInstance().setGoogleDnsEnabled(val == 1);
+		Network::Dns::setEnabled(val == 1);
+	};
+	allItems.push_back(googleDns);
+
+	SettingItem debugShortcuts;
+	debugShortcuts.label = TR("settings.debug_shortcuts");
+	debugShortcuts.description = TR("settings.desc.debug_shortcuts");
+	debugShortcuts.type = SettingItemType::TOGGLE;
+	debugShortcuts.value = Config::getInstance().isDebugShortcutsEnabled() ? 1 : 0;
+	debugShortcuts.min = 0;
+	debugShortcuts.max = 1;
+	debugShortcuts.valueFormatter = [](int val) { return (val == 1) ? TR("common.enabled") : TR("common.disabled"); };
+	debugShortcuts.onUpdate = [](int val) { Config::getInstance().setDebugShortcutsEnabled(val == 1); };
+	allItems.push_back(debugShortcuts);
 
 	// DEVELOPER
 	SettingItem devSection;

@@ -447,10 +447,15 @@ void ScreenManager::update() {
 		}
 	}
 
-	if ((kHeld & KEY_L) && (kDown & KEY_R)) {
+	// While connecting, L+R belongs to the loading screen (switching to Google DNS).
+	const bool connecting = Discord::DiscordClient::getInstance().getState() != Discord::ConnectionState::READY;
+	if (!Config::getInstance().isDebugShortcutsEnabled()) {
+		debugOverlayEnabled = false;
+		statsOverlayEnabled = false;
+	} else if (!connecting && (kHeld & KEY_L) && (kDown & KEY_R)) {
 		toggleDebugOverlay();
 		Logger::log("Debug overlay toggled: %s", debugOverlayEnabled ? "ON" : "OFF");
-	} else if ((kHeld & KEY_R) && (kDown & KEY_L)) {
+	} else if (!connecting && (kHeld & KEY_R) && (kDown & KEY_L)) {
 		toggleStatsOverlay();
 	}
 

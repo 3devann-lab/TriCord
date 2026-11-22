@@ -10,6 +10,9 @@ namespace LoadingView {
 // callers only need to keep redrawing while it shows.
 void drawTop();
 void drawBottom();
+// Call every frame the loading screen shows. Holding L+R, or no connection after 20 seconds, switches
+// lookups of Discord's hosts to Google DNS for networks that block them.
+void update();
 
 } // namespace LoadingView
 } // namespace UI
