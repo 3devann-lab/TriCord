@@ -1175,6 +1175,32 @@ void DiscordClient::handleDispatch(const rapidjson::Document &doc) {
 		handleInteractionResult(d, InteractionResult::MODAL);
 	} else if (t == "PRESENCE_UPDATE") {
 		handlePresenceUpdate(d);
+	} else if (t == "GUILD_MEMBER_LIST_UPDATE") {
+		// Only read for presences: the member list itself is not shown.
+		if (d.HasMember("ops") && d["ops"].IsArray()) {
+			auto takeItem = [this](const rapidjson::Value &item) {
+				if (item.IsObject() && item.HasMember("member") && item["member"].IsObject()) {
+					const rapidjson::Value &member = item["member"];
+					if (member.HasMember("presence") && member["presence"].IsObject()) {
+						storePresence(member["presence"]);
+					}
+				}
+			};
+			for (const auto &op : d["ops"].GetArray()) {
+				if (!op.IsObject()) {
+					continue;
+				}
+				if (op.HasMember("items") && op["items"].IsArray()) {
+					for (const auto &item : op["items"].GetArray()) {
+						takeItem(item);
+					}
+				}
+				if (op.HasMember("item")) {
+					takeItem(op["item"]);
+				}
+			}
+			Utils::requestRedraw();
+		}
 	} else if (t == "USER_SETTINGS_UPDATE") {
 		handleUserSettingsUpdate(d);
 	} else if (t == "MESSAGE_ACK") {
@@ -1399,6 +1425,30 @@ bool DiscordClient::parseReady(JsonPull &p, ReadyData &ready, rapidjson::Documen
 				                      [&](const rapidjson::Value &f) { ready.folders.push_back(parseGuildFolder(f)); });
 			});
 		}
+		if (key == "presences") {
+			return forEachElement(p, item, [&](const rapidjson::Value &entry) { storePresence(entry); });
+		}
+		if (key == "merged_presences") {
+			JsonPull::Token opened = openValue(p);
+			if (opened != JsonPull::Token::START_OBJECT) {
+				return opened == JsonPull::Token::START_ARRAY ? p.skipRest() : opened != JsonPull::Token::NONE;
+			}
+			return forEachMember(p, [&](const std::string &group) {
+				if (group == "friends") {
+					return forEachElement(p, item, [&](const rapidjson::Value &entry) { storePresence(entry); });
+				}
+				if (group == "guilds") {
+					return forEachElement(p, item, [&](const rapidjson::Value &guildPresences) {
+						if (guildPresences.IsArray()) {
+							for (const auto &entry : guildPresences.GetArray()) {
+								storePresence(entry);
+							}
+						}
+					});
+				}
+				return p.skipValue();
+			});
+		}
 		if (key == "user_guild_settings") {
 			return forEachEntry(p, item, [&](const rapidjson::Value &entry) {
 				parseUserGuildSettings(entry, ready.notificationSettings);
@@ -1555,6 +1605,9 @@ bool DiscordClient::parseGuildFields(JsonPull &p, Guild &guild, const std::strin
 		if (key == "channels" && keepDetails) {
 			guild.channels.clear();
 			return parseChannelArray(p, item, guild.channels, keepDetails);
+		}
+		if (key == "presences") {
+			return forEachElement(p, item, [&](const rapidjson::Value &entry) { storePresence(entry); });
 		}
 		if (key == "voice_states" && voiceStates) {
 			return forEachElement(p, item, [&](const rapidjson::Value &state) {
@@ -2293,6 +2346,114 @@ void DiscordClient::handlePresenceUpdate(const rapidjson::Value &d) {
 		currentUser.status = stringToStatus(statusStr);
 		Logger::log("[Gateway] Own presence updated via PRESENCE_UPDATE to %s", statusStr.c_str());
 	}
+	storePresence(d);
+	Utils::requestRedraw();
+}
+
+namespace {
+
+constexpr size_t MAX_PRESENCES = 3000;
+
+// One line per activity type, the way Discord's member list words them.
+std::string describeActivity(const rapidjson::Value &activity) {
+	const int type = Utils::Json::getInt(activity, "type");
+	const std::string name = Utils::Json::getString(activity, "name");
+	const std::string details = Utils::Json::getString(activity, "details");
+	const std::string state = Utils::Json::getString(activity, "state");
+	switch (type) {
+	case 0:
+		return Core::I18n::format(Core::I18n::getInstance().get("presence.playing"), name);
+	case 1:
+		return Core::I18n::format(Core::I18n::getInstance().get("presence.streaming"), details.empty() ? name : details);
+	case 2: {
+		std::string line = Core::I18n::format(Core::I18n::getInstance().get("presence.listening"), name);
+		// Spotify puts the song in details and the artist in state.
+		if (!details.empty()) {
+			line += ": " + details;
+			if (!state.empty()) {
+				line += " - " + state;
+			}
+		}
+		return line;
+	}
+	case 3:
+		return Core::I18n::format(Core::I18n::getInstance().get("presence.watching"), name);
+	case 5:
+		return Core::I18n::format(Core::I18n::getInstance().get("presence.competing"), name);
+	default:
+		return name;
+	}
+}
+
+} // namespace
+
+// Accepts both shapes Discord sends: {"user": {"id"}, ...} and {"user_id", ...}.
+void DiscordClient::storePresence(const rapidjson::Value &entry) {
+	if (!entry.IsObject()) {
+		return;
+	}
+	std::string userId = Utils::Json::getString(entry, "user_id");
+	if (userId.empty() && entry.HasMember("user") && entry["user"].IsObject()) {
+		userId = Utils::Json::getString(entry["user"], "id");
+	}
+	if (userId.empty()) {
+		return;
+	}
+	Presence presence;
+	presence.status = stringToStatus(Utils::Json::getString(entry, "status"));
+	if (presence.status == UserStatus::UNKNOWN) {
+		presence.status = UserStatus::OFFLINE;
+	}
+	if (entry.HasMember("activities") && entry["activities"].IsArray()) {
+		for (const auto &activity : entry["activities"].GetArray()) {
+			if (!activity.IsObject()) {
+				continue;
+			}
+			if (Utils::Json::getInt(activity, "type") == 4) {
+				std::string text = Utils::Json::getString(activity, "state");
+				if (activity.HasMember("emoji") && activity["emoji"].IsObject()) {
+					const std::string emoji = Utils::Json::getString(activity["emoji"], "name");
+					// Custom emoji names are words; only plain Unicode emoji read well inline.
+					if (!emoji.empty() && (unsigned char)emoji[0] >= 0x80) {
+						text = text.empty() ? emoji : emoji + " " + text;
+					}
+				}
+				presence.customStatus = text;
+			} else if (presence.activity.empty()) {
+				presence.activity = describeActivity(activity);
+			}
+		}
+	}
+	if (entry.HasMember("client_status") && entry["client_status"].IsObject()) {
+		const rapidjson::Value &clients = entry["client_status"];
+		presence.mobile = clients.HasMember("mobile") && !clients.HasMember("desktop") && !clients.HasMember("web");
+	}
+
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	if (presence.status == UserStatus::OFFLINE && presence.activity.empty() && presence.customStatus.empty()) {
+		presences.erase(userId);
+		return;
+	}
+	if (presences.size() >= MAX_PRESENCES && presences.find(userId) == presences.end()) {
+		return;
+	}
+	presences[userId] = std::move(presence);
+}
+
+Presence DiscordClient::getPresence(const std::string &userId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	if (userId == currentUser.id) {
+		Presence self;
+		self.status = currentUser.status == UserStatus::UNKNOWN ? UserStatus::ONLINE : currentUser.status;
+		auto it = presences.find(userId);
+		if (it != presences.end()) {
+			self.activity = it->second.activity;
+			self.customStatus = it->second.customStatus;
+		}
+		return self;
+	}
+	auto it = presences.find(userId);
+	return it != presences.end() ? it->second : Presence();
 }
 
 static std::string parseMuteEndTime(const rapidjson::Value &obj) {

@@ -36,6 +36,15 @@ struct Relationship {
 	User user;
 };
 
+// What a user is up to, summarised for display.
+struct Presence {
+	UserStatus status = UserStatus::OFFLINE;
+	// "Playing Minecraft", "Listening to Spotify", ...; empty when nothing.
+	std::string activity;
+	std::string customStatus;
+	bool mobile = false;
+};
+
 struct Overwrite {
 	std::string id;
 	int type = 0;

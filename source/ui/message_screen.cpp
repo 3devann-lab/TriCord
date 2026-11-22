@@ -12,6 +12,7 @@
 #include "ui/file_browser.h"
 #include "ui/gif_picker.h"
 #include "ui/image_viewer.h"
+#include "ui/presence_ui.h"
 #include "ui/image_manager.h"
 #include "ui/upload_confirm.h"
 #include "ui/video_player.h"
@@ -1700,6 +1701,13 @@ float MessageScreen::drawAuthorHeader(const Discord::Message &msg, float x, floa
 		C2D_DrawRectSolid(avatarX, y, 0.5f, avatarSize, avatarSize, C2D_Color32(80, 80, 100, 255));
 		std::string initial = Utils::Utf8::getFirstChar(displayName.empty() ? "?" : displayName);
 		drawText(avatarX + 10, y + 8, 0.6f, 0.45f, 0.45f, C2D_Color32(255, 255, 255, 255), initial);
+	}
+	if (!msg.author.bot && !msg.isEphemeral()) {
+		const Discord::Presence presence = client.getPresence(msg.author.id);
+		if (presence.status != Discord::UserStatus::OFFLINE) {
+			drawStatusBadge(avatarX + avatarSize - 3.0f, y + avatarSize - 3.0f, 9.0f, presence,
+			                ScreenManager::colorBackground(), 0.52f);
+		}
 	}
 
 	drawRichText(x, y - 2.0f, 0.5f, 0.45f, 0.45f, nameColor, displayName);
@@ -4597,6 +4605,21 @@ void MessageScreen::renderDmProfile(float y) {
 		         TR("profile.bot"));
 	}
 	infoY += 16.0f;
+
+	const Discord::Presence presence = client.getPresence(user.id);
+	drawStatusBadge(15.0f, infoY + 6.0f, 10.0f, presence, ScreenManager::colorBackgroundDark(), 0.5f);
+	drawText(25.0f, infoY, 0.5f, 0.4f, 0.4f, ScreenManager::colorText(), statusLabel(presence));
+	infoY += 15.0f;
+	if (!presence.activity.empty()) {
+		drawText(10.0f, infoY, 0.5f, 0.38f, 0.38f, ScreenManager::colorAccent(),
+		         getTruncatedText(presence.activity, 300.0f, 0.38f, 0.38f));
+		infoY += 14.0f;
+	}
+	if (!presence.customStatus.empty()) {
+		drawText(10.0f, infoY, 0.5f, 0.38f, 0.38f, ScreenManager::colorTextMuted(),
+		         getTruncatedText(presence.customStatus, 300.0f, 0.38f, 0.38f));
+		infoY += 14.0f;
+	}
 
 	if (!profile.pronouns.empty()) {
 		drawText(10.0f, infoY, 0.5f, 0.38f, 0.38f, ScreenManager::colorTextMuted(), profile.pronouns);
