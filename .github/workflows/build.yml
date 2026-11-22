@@ -24,6 +24,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     container: devkitpro/devkitarm:latest
+    defaults:
+      run:
+        # Container steps otherwise run under sh, and the commit step uses bash syntax.
+        shell: bash
     steps:
       # git has to be there before checkout, or it falls back to a tarball with no history to commit to.
       - name: Install host tools
