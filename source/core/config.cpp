@@ -18,6 +18,7 @@
 #include <rapidjson/writer.h>
 
 #include "log.h"
+#include "core/theme_presets.h"
 #include "utils/color_utils.h"
 #include "utils/file_utils.h"
 
@@ -28,6 +29,7 @@ Config::Config()
       selectedThemeName("") {
 	customTheme = getDarkPreset();
 	customTheme.name = "Custom Theme";
+	presetTheme = getDarkPreset();
 }
 
 Theme Config::getDarkPreset() {
@@ -73,6 +75,7 @@ Theme Config::getLightPreset() {
 	t.overlay = 0x96000000;
 	t.pure_white = 0xFFFFFFFF;
 
+	t.light = true;
 	t.text = 0xFF070606;
 	t.text_muted = 0xFF58504E;
 	t.link = 0xFFFEBA49;
@@ -88,18 +91,33 @@ Theme Config::getLightPreset() {
 	return t;
 }
 
+Theme Config::getPreset(int type) {
+	if (type == 1) {
+		return getLightPreset();
+	}
+	if (type >= 2 && type < getThemeTypeCount()) {
+		return ThemePresets::build(type);
+	}
+	return getDarkPreset();
+}
+
+int Config::getThemeTypeCount() { return 2 + ThemePresets::count(); }
+
+std::string Config::getThemeTypeName(int type) {
+	if (type == 0) {
+		return TR("settings.theme.dark");
+	}
+	if (type == 1) {
+		return TR("settings.theme.light");
+	}
+	return ThemePresets::name(type);
+}
+
 const Theme &Config::getTheme() const {
 	if (customThemeEnabled) {
 		return customTheme;
 	}
-	if (themeType == 0) {
-		static Theme dark = getDarkPreset();
-		return dark;
-	} else if (themeType == 1) {
-		static Theme light = getLightPreset();
-		return light;
-	}
-	return customTheme;
+	return presetTheme;
 }
 static void encrypt_decrypt_data(std::vector<u8> &data) {
 	size_t original_size = data.size();
@@ -245,8 +263,9 @@ void Config::loadSettings() {
 			if (doc.HasMember("mic_volume") && doc["mic_volume"].IsInt()) {
 				micVolume = std::clamp(doc["mic_volume"].GetInt(), 0, 200);
 			}
-			if (doc.HasMember("hardware_video") && doc["hardware_video"].IsBool()) {
-				hardwareVideo = doc["hardware_video"].GetBool();
+			// A new key, so builds that saved the old default of on start from off.
+			if (doc.HasMember("hardware_video_experimental") && doc["hardware_video_experimental"].IsBool()) {
+				hardwareVideo = doc["hardware_video_experimental"].GetBool();
 			}
 			if (doc.HasMember("video_volume") && doc["video_volume"].IsInt()) {
 				videoVolume = std::clamp(doc["video_volume"].GetInt(), 0, 200);
@@ -303,7 +322,7 @@ void Config::saveSettings() {
 	writer.Bool(showHiddenChannels);
 	writer.Key("mic_volume");
 	writer.Int(micVolume);
-	writer.Key("hardware_video");
+	writer.Key("hardware_video_experimental");
 	writer.Bool(hardwareVideo);
 	writer.Key("video_volume");
 	writer.Int(videoVolume);
@@ -367,7 +386,8 @@ void Config::setTimezoneOffset(int offset) {
 }
 
 void Config::setThemeType(int type) {
-	themeType = type;
+	themeType = (type >= 0 && type < getThemeTypeCount()) ? type : 0;
+	presetTheme = getPreset(themeType);
 	if (customThemeEnabled && !selectedThemeName.empty()) {
 		loadThemeFromFile(selectedThemeName);
 	}
@@ -461,7 +481,11 @@ void Config::updateCurrentAccountName(const std::string &name) {
 }
 
 void Config::loadTheme() {
-	customTheme = (themeType == 1) ? getLightPreset() : getDarkPreset();
+	if (themeType < 0 || themeType >= getThemeTypeCount()) {
+		themeType = 0;
+	}
+	presetTheme = getPreset(themeType);
+	customTheme = presetTheme;
 	if (customThemeEnabled && !selectedThemeName.empty()) {
 		loadThemeFromFile(selectedThemeName);
 	}
@@ -507,7 +531,8 @@ bool Config::loadThemeFromFile(const std::string &name) {
 		return false;
 	}
 
-	Theme newTheme = (themeType == 1) ? getLightPreset() : getDarkPreset();
+	// Keys a theme leaves out fall back to the chosen preset.
+	Theme newTheme = getPreset(themeType);
 	if (doc.HasMember("name") && doc["name"].IsString()) {
 		newTheme.name = doc["name"].GetString();
 	} else {

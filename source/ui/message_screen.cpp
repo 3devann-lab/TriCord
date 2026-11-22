@@ -236,7 +236,7 @@ void drawAttachmentImage(const Discord::Attachment &attach, const ImageManager::
 		C2D_DrawImageAt(img, x, y, 0.5f, nullptr, w / info.originalW, h / info.originalH);
 		markDrawnIfVisible(info, y, h);
 	} else if (info.failed) {
-		u32 errorBg = (Config::getInstance().getThemeType() == 1) ? C2D_Color32(255, 235, 235, 255)
+		u32 errorBg = Config::getInstance().isLightTheme() ? C2D_Color32(255, 235, 235, 255)
 		                                                          : C2D_Color32(60, 40, 40, 255);
 		C2D_DrawRectSolid(x, y, 0.5f, w, h, errorBg);
 		drawText(x + 5, y + (h / 2) - 6, 0.5f, 0.3f, 0.3f, ScreenManager::colorError(), TR("message.image_failed"));
@@ -322,7 +322,7 @@ bool hasEmoji(const Discord::Emoji &emoji) { return !emoji.name.empty() || !emoj
 u32 dimmed(u32 color) { return (color & 0x00FFFFFF) | 0x80000000; }
 
 u32 messageHighlight(bool ephemeral, bool selected) {
-	const bool light = Config::getInstance().getThemeType() == 1;
+	const bool light = Config::getInstance().isLightTheme();
 	if (ephemeral) {
 		if (light) {
 			return selected ? C2D_Color32(232, 240, 255, 255) : C2D_Color32(218, 227, 252, 255);
@@ -1766,7 +1766,7 @@ float MessageScreen::drawStickers(const Discord::Message &msg, float x, float y,
 			markDrawnIfVisible(info, newY, stickerSize);
 			newY += stickerSize + 4.0f;
 		} else if (info.failed) {
-			u32 stickerBg = (Config::getInstance().getThemeType() == 1) ? C2D_Color32(255, 235, 235, 255)
+			u32 stickerBg = Config::getInstance().isLightTheme() ? C2D_Color32(255, 235, 235, 255)
 			                                                            : C2D_Color32(60, 40, 40, 255);
 			C2D_DrawRectSolid(x, newY, 0.5f, stickerSize, stickerSize, stickerBg);
 			drawText(x + 5, newY + (stickerSize / 2) - 6, 0.55f, 0.3f, 0.3f, ScreenManager::colorError(),

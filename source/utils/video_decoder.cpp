@@ -60,6 +60,24 @@ constexpr int WAVEBUF_SAMPLES = 4096;
 constexpr int FRAME_SLOTS = 3;
 constexpr size_t MAX_VIDEO_PACKETS = 90;
 constexpr size_t MAX_AUDIO_PACKETS = 400;
+// Queued compressed data, which a high-bitrate video can make large.
+constexpr size_t MAX_AUDIO_BYTES = 1024 * 1024;
+constexpr size_t SAFETY_HEAP = 6 * 1024 * 1024;
+constexpr size_t DEMUX_STACK = 384 * 1024;
+constexpr size_t AUDIO_STACK = 128 * 1024;
+
+size_t maxVideoBytes() { return Utils::System::isNew3DS() ? 6 * 1024 * 1024 : 3 * 1024 * 1024; }
+
+// What software decoding a picture of this size needs: H.264 keeps up to a handful of reference
+// frames plus the ones being decoded and reordered. The app is built without exceptions, so running
+// the heap dry anywhere aborts it; refusing up front is the only safe answer.
+bool softwareDecodeFits(int width, int height) {
+	const size_t frame = (size_t)(width + 32) * (height + 32) * 3 / 2;
+	const size_t needed = frame * 7 + maxVideoBytes() + MAX_AUDIO_BYTES + SAFETY_HEAP;
+	const size_t available = Utils::System::heapFreeBytes();
+	Logger::log("[Video] %dx%d needs ~%zu KB, %zu KB free", width, height, needed / 1024, available / 1024);
+	return needed <= available;
+}
 constexpr size_t MVD_INPUT_SIZE = 2 * 1024 * 1024;
 constexpr int MVD_MAX_ERRORS = 8;
 constexpr int SCREEN_W = 400;
@@ -136,6 +154,7 @@ struct VideoDecoder::Impl {
 	int generation = 0;
 
 	std::deque<AVPacket *> audioPackets;
+	size_t audioBytes = 0;
 	bool audioEof = false;
 	bool audioDrained = false;
 	float volume = 1.0f;
@@ -152,7 +171,9 @@ struct VideoDecoder::Impl {
 	AVFrame *videoFrame = nullptr;
 	double lastVideoPts = 0.0;
 	bool needKeyframe = false;
+	size_t videoBytes = 0;
 
+	bool tooLarge = false;
 	bool mvdInited = false;
 	bool mvdActive = false;
 	bool mvdFailed = false;
@@ -202,12 +223,18 @@ struct VideoDecoder::Impl {
 		if (!codec) {
 			return false;
 		}
+		if (!softwareDecodeFits(stream->codecpar->width, stream->codecpar->height)) {
+			tooLarge = true;
+			return false;
+		}
 		videoCtx = avcodec_alloc_context3(codec);
 		if (!videoCtx || avcodec_parameters_to_context(videoCtx, stream->codecpar) < 0) {
 			return false;
 		}
 		videoCtx->pkt_timebase = stream->time_base;
 		videoCtx->thread_count = 1;
+		// A stream that grows mid-way would outrun the memory check above.
+		videoCtx->max_pixels = (int64_t)stream->codecpar->width * stream->codecpar->height;
 		videoCtx->flags2 |= AV_CODEC_FLAG2_FAST;
 		// Deblocking is a large share of H.264 decoding, and the Old 3DS cannot spare it.
 		videoCtx->skip_loop_filter = Utils::System::isNew3DS() ? AVDISCARD_NONREF : AVDISCARD_ALL;
@@ -396,7 +423,9 @@ struct VideoDecoder::Impl {
 				ok = openSoftwareVideo(stream);
 			}
 			if (!ok || par->width <= 0 || par->height <= 0) {
-				videoProblem = "Unsupported video format (" + opened.videoCodec + ").";
+				videoProblem = tooLarge ? "This video is too large for this console's memory (" +
+				                              std::to_string(par->width) + "x" + std::to_string(par->height) + ")."
+				                        : "Unsupported video format (" + opened.videoCodec + ").";
 				videoStream = -1;
 			}
 		}
@@ -708,6 +737,7 @@ struct VideoDecoder::Impl {
 			av_packet_free(&packet);
 		}
 		videoPackets.clear();
+		videoBytes = 0;
 	}
 
 	void performSeek(double target, std::deque<AVPacket *> &videoPackets) {
@@ -732,6 +762,7 @@ struct VideoDecoder::Impl {
 			av_packet_free(&packet);
 		}
 		audioPackets.clear();
+		audioBytes = 0;
 		for (Frame &frame : readyFrames) {
 			freeBuffers.push_back(std::move(frame.pixels));
 		}
@@ -752,7 +783,8 @@ struct VideoDecoder::Impl {
 		closeMvd();
 		AVStream *stream = fmt->streams[videoStream];
 		if (!openSoftwareVideo(stream)) {
-			fail("Unsupported video format (" + info.videoCodec + ").");
+			fail(tooLarge ? "This video is too large for this console's memory." :
+			                "Unsupported video format (" + info.videoCodec + ").");
 			return;
 		}
 		{
@@ -769,7 +801,7 @@ struct VideoDecoder::Impl {
 		}
 		if (audioCtx) {
 			// Relative to this thread, which sits two below the UI: the audio thread goes one above it.
-			audioThread.start([this] { audioMain(); }, -3, 64 * 1024, false);
+			audioThread.start([this] { audioMain(); }, -3, AUDIO_STACK, false);
 		}
 
 		std::deque<AVPacket *> videoPackets;
@@ -812,11 +844,14 @@ struct VideoDecoder::Impl {
 
 			bool worked = false;
 			size_t audioQueued = 0;
+			size_t audioQueuedBytes = 0;
 			{
 				std::lock_guard<std::mutex> lock(mutex);
 				audioQueued = audioPackets.size();
+				audioQueuedBytes = audioBytes;
 			}
-			if (!eof && videoPackets.size() < MAX_VIDEO_PACKETS && audioQueued < MAX_AUDIO_PACKETS) {
+			if (!eof && videoPackets.size() < MAX_VIDEO_PACKETS && videoBytes < maxVideoBytes() &&
+			    audioQueued < MAX_AUDIO_PACKETS && audioQueuedBytes < MAX_AUDIO_BYTES) {
 				const int res = av_read_frame(fmt, packet);
 				if (res < 0) {
 					eof = true;
@@ -825,9 +860,11 @@ struct VideoDecoder::Impl {
 					wake.notify_all();
 				} else if (packet->stream_index == videoStream) {
 					videoPackets.push_back(av_packet_clone(packet));
+					videoBytes += packet->size;
 				} else if (packet->stream_index == audioStream) {
 					std::lock_guard<std::mutex> lock(mutex);
 					audioPackets.push_back(av_packet_clone(packet));
+					audioBytes += packet->size;
 					wake.notify_all();
 				}
 				av_packet_unref(packet);
@@ -838,6 +875,7 @@ struct VideoDecoder::Impl {
 				if (!videoPackets.empty()) {
 					AVPacket *next = videoPackets.front();
 					videoPackets.pop_front();
+					videoBytes -= std::min<size_t>(videoBytes, next->size);
 					const bool key = next->flags & AV_PKT_FLAG_KEY;
 					const AVRational tb = fmt->streams[videoStream]->time_base;
 					const double when = toSeconds(next->dts != AV_NOPTS_VALUE ? next->dts : next->pts, tb);
@@ -996,6 +1034,7 @@ struct VideoDecoder::Impl {
 				} else if (!audioPackets.empty()) {
 					packet = audioPackets.front();
 					audioPackets.pop_front();
+					audioBytes -= std::min<size_t>(audioBytes, packet->size);
 					wake.notify_all();
 				} else if (audioEof && !audioDrained) {
 					drain = true;
@@ -1118,7 +1157,7 @@ void VideoDecoder::start(const std::string &path, double startSeconds, bool allo
 	impl->loop = loop;
 	Impl *raw = impl.get();
 	// FFmpeg's H.264 decoder wants a deep stack.
-	impl->demuxThread.start([raw] { raw->demuxMain(); }, 2, 256 * 1024, true);
+	impl->demuxThread.start([raw] { raw->demuxMain(); }, 2, DEMUX_STACK, true);
 }
 
 void VideoDecoder::stop() {
