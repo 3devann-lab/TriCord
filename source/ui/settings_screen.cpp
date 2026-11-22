@@ -1,4 +1,5 @@
 #include "ui/settings_screen.h"
+#include "utils/system_utils.h"
 #include "core/config.h"
 #include "core/i18n.h"
 #include "log.h"
@@ -208,6 +209,21 @@ void SettingsScreen::onEnter() {
 	};
 	notificationSound.onUpdate = [](int val) { Config::getInstance().setNotificationSoundEnabled(val == 1); };
 	allItems.push_back(notificationSound);
+
+	if (Utils::System::isNew3DS()) {
+		SettingItem hardwareVideo;
+		hardwareVideo.label = TR("settings.hardware_video");
+		hardwareVideo.description = TR("settings.desc.hardware_video");
+		hardwareVideo.type = SettingItemType::TOGGLE;
+		hardwareVideo.value = Config::getInstance().isHardwareVideoEnabled() ? 1 : 0;
+		hardwareVideo.min = 0;
+		hardwareVideo.max = 1;
+		hardwareVideo.valueFormatter = [](int val) {
+			return (val == 1) ? TR("common.enabled") : TR("common.disabled");
+		};
+		hardwareVideo.onUpdate = [](int val) { Config::getInstance().setHardwareVideoEnabled(val == 1); };
+		allItems.push_back(hardwareVideo);
+	}
 
 	// DEVELOPER
 	SettingItem devSection;

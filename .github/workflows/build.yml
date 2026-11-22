@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   build:
+    # A pull request from this repository's own branch is already built by its push.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     container: devkitpro/devkitarm:latest
     steps:
