@@ -19,7 +19,14 @@
 #include "ui/voice_controls.h"
 #include "ui/voice_popup.h"
 #include "ui/markdown_renderer.h"
+#include "ui/message_list_overlay.h"
+#include "ui/invite_overlay.h"
+#include "ui/member_list_overlay.h"
+#include "ui/doodle_pad.h"
+#include "ui/voice_recorder.h"
 #include "ui/screen_manager.h"
+#include "ui/server_list_screen.h"
+#include "utils/base64_utils.h"
 #include "utils/file_utils.h"
 #include "utils/message_utils.h"
 #include "utils/redraw.h"
@@ -83,6 +90,27 @@ bool isVideoAttachment(const Discord::Attachment &attach) {
 		return false;
 	}
 	return attach.content_type.rfind("video/", 0) == 0 || Utils::File::isVideoPath(attach.filename);
+}
+
+bool isAudioAttachment(const Discord::Attachment &attach) {
+	if (!hasRemoteFile(attach)) {
+		return false;
+	}
+	if (attach.content_type.rfind("audio/", 0) == 0 || !attach.waveform.empty()) {
+		return true;
+	}
+	static const char *exts[] = {"mp3", "ogg", "oga", "opus", "m4a", "wav", "flac", "aac"};
+	const std::string ext = Utils::File::extension(attach.filename);
+	for (const char *e : exts) {
+		if (ext == e) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool isVoiceMessage(const Discord::Attachment &attach) {
+	return !attach.waveform.empty() || attach.filename == "voice-message.ogg";
 }
 
 // Images, and videos, which show the still the media proxy renders for them.
@@ -416,6 +444,7 @@ MessageScreen::~MessageScreen() {
 void MessageScreen::onEnter() {
 	isLoading = true;
 	newMessageCount = 0;
+	pendingJumpId = ScreenManager::getInstance().takePendingJump(channelId);
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	std::lock_guard<std::recursive_mutex> lock(client.getMutex());
@@ -438,7 +467,7 @@ void MessageScreen::onEnter() {
 
 	this->channelName = MessageUtils::getChannelDisplayName(channel);
 
-	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f, 0.55f, 0.55f);
+	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f - statusIndicatorWidth(), 0.55f, 0.55f);
 
 	client.setSelectedChannelId(channelId);
 
@@ -511,7 +540,7 @@ void MessageScreen::onEnter() {
 		catchUpMessages();
 	});
 
-	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f, 0.55f, 0.55f);
+	this->truncatedChannelName = getTruncatedRichText(this->channelName, 310.0f - 56.0f - statusIndicatorWidth(), 0.55f, 0.55f);
 	this->messages = client.getEphemeralMessages(channelId);
 	targetScrollY = 0.0f;
 	currentScrollY = 0.0f;
@@ -555,6 +584,23 @@ void MessageScreen::onEnter() {
 			isLoading = false;
 		});
 	} else {
+		// The last copy on the SD card shows at once; the fetch below replaces it.
+		client.loadCachedMessagesAsync(channelId, [this, token = aliveToken](
+		                                              const std::vector<Discord::Message> &cached) {
+			if (!*token) {
+				return;
+			}
+			std::lock_guard<std::recursive_mutex> lock(messageMutex);
+			if (!*token || !isLoading || freshHistoryLoaded) {
+				return;
+			}
+			replaceHistory(cached);
+			rebuildLayoutCache();
+			scrollToBottom();
+			showingCached = true;
+			isLoading = false;
+			Utils::requestRedraw();
+		});
 		client.fetchMessagesAsync(channelId, 50,
 		                          [this, token = aliveToken](const std::vector<Discord::Message> &fetched) {
 			                          if (!*token) {
@@ -565,11 +611,27 @@ void MessageScreen::onEnter() {
 				                          if (!*token) {
 					                          return;
 				                          }
-				                          replaceHistory(fetched);
-				                          rebuildLayoutCache();
-				                          scrollToBottom();
+				                          freshHistoryLoaded = true;
+				                          if (fetched.empty() && showingCached) {
+					                          // Offline or failed: keep the cached copy on screen.
+					                          pendingToastText = TR("message.cache_stale");
+				                          } else {
+					                          std::string keepSelected;
+					                          if (showingCached && selectedIndex >= 0 &&
+					                              selectedIndex < (int)messages.size()) {
+						                          keepSelected = messages[selectedIndex].id;
+					                          }
+					                          bool atBottom = !showingCached || isScrolledToBottom();
+					                          replaceHistory(fetched);
+					                          rebuildLayoutCache();
+					                          if (atBottom || !selectMessageById(keepSelected)) {
+						                          scrollToBottom();
+					                          }
+				                          }
+				                          showingCached = false;
 			                          }
 			                          isLoading = false;
+			                          Utils::requestRedraw();
 			                          Discord::DiscordClient::getInstance().markChannelReadLatest(
 			                              this->channelId, fetched.empty() ? "" : fetched.front().id);
 		                          });
@@ -625,6 +687,12 @@ void MessageScreen::update() {
 		return;
 	}
 	flushMemberFetches();
+
+	if (!pendingJumpId.empty() && freshHistoryLoaded && !isLoading) {
+		std::string target = pendingJumpId;
+		pendingJumpId.clear();
+		jumpToMessage(target);
+	}
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	std::lock_guard<std::recursive_mutex> clientLock(client.getMutex());
@@ -854,7 +922,35 @@ void MessageScreen::update() {
 			std::string action = menuActions[menuIndex];
 			isMenuOpen = false;
 
-			if (action == "AttachFile") {
+			if (action == "ChannelSearch") {
+				openMessageList(MessageListOverlay::Mode::SEARCH);
+			} else if (action == "ChannelPins") {
+				openMessageList(MessageListOverlay::Mode::PINS);
+			} else if (action == "ChannelLatest") {
+				jumpToPresent();
+			} else if (action == "ChannelMembers") {
+				pushOverlay(std::make_unique<MemberListOverlay>(guildId, channelId, channelName,
+				                                                [this](const std::string &userId) { openDmWith(userId); }));
+			} else if (action == "ChannelInvite") {
+				pushOverlay(InviteOverlay::create(channelId, channelName));
+			} else if (action == "OpenInvite") {
+				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
+					std::string code = findInviteCode(messages[selectedIndex].content);
+					if (!code.empty()) {
+						pushOverlay(InviteOverlay::preview(code, [](const std::string &targetChannel) {
+							if (targetChannel.empty()) {
+								return;
+							}
+							Discord::DiscordClient::getInstance().setSelectedChannelId(targetChannel);
+							ScreenManager::getInstance().setScreen(ScreenType::MESSAGES);
+						}));
+					}
+				}
+			} else if (action == "AttachVoice") {
+				openVoiceRecorder();
+			} else if (action == "AttachDoodle") {
+				openDoodlePad();
+			} else if (action == "AttachFile") {
 				openFileBrowser();
 			} else if (action == "AttachGif") {
 				openGifPicker();
@@ -1049,6 +1145,13 @@ void MessageScreen::update() {
 		isManualScrolling = false;
 	}
 
+	// New 3DS: the C-stick scrolls without moving the selection.
+	if ((kHeld & (KEY_CSTICK_UP | KEY_CSTICK_DOWN)) && bottomMode != BottomScreenMode::EMOJI_PICKER) {
+		targetScrollY += (kHeld & KEY_CSTICK_DOWN) ? 7.0f : -7.0f;
+		targetScrollY = std::clamp(targetScrollY, 0.0f, std::max(0.0f, totalContentHeight - 240.0f));
+		isManualScrolling = true;
+	}
+
 	if (componentMode && componentCursorHeight > 0.0f) {
 		const float topLimit = 28.0f;
 		const float bottomLimit = 232.0f;
@@ -1223,6 +1326,21 @@ void MessageScreen::update() {
 		// L+R toggles the debug overlay, so R only counts on its own.
 		if ((kDown & KEY_R) && !(kHeld & KEY_L) && canAttach()) {
 			showAttachMenu();
+		}
+
+		// New 3DS: ZL/ZR step through the channel list, C-stick right jumps to the newest messages.
+		// L on its own: the channel menu (search, pins, members, invite).
+		if ((kDown & KEY_L) && !(kHeld & KEY_R) && !isHiddenChannel) {
+			showChannelMenu();
+		}
+
+		if (kDown & (KEY_ZL | KEY_ZR)) {
+			updateLock.unlock();
+			switchChannel((kDown & KEY_ZR) ? 1 : -1);
+			return;
+		}
+		if (kDown & KEY_CSTICK_RIGHT) {
+			jumpToPresent();
 		}
 	}
 
@@ -1790,6 +1908,15 @@ float MessageScreen::drawAttachment(const Discord::Attachment &attach, float x, 
 
 	if (!isVisualAttachment(attach)) {
 		const std::string name = hidden ? TR("message.spoiler") : attach.filename;
+		if (isAudioAttachment(attach) && !hidden) {
+			std::string label = isVoiceMessage(attach) ? TR("message.voice_message") : name;
+			if (attach.durationSecs > 0.0) {
+				label += "  " + formatDuration(attach.durationSecs);
+			}
+			drawText(x, y, 0.5f, 0.35f, 0.35f, ScreenManager::colorAccent(),
+			         "\u25B6 " + label + "  (" + TR("message.audio_play_hint") + ")");
+			return y + 12.0f;
+		}
 		drawText(x, y, 0.5f, 0.35f, 0.35f, ScreenManager::colorTextMuted(),
 		         Core::I18n::format(TR("message.file"), name));
 		return y + 12.0f;
@@ -3285,6 +3412,13 @@ void MessageScreen::renderTop(C3D_RenderTarget *target) {
 		drawCenteredRichText(indicatorY + 5.0f, 0.66f, 0.4f, 0.4f, ScreenManager::colorWhite(), text, 400.0f);
 	}
 
+	if (showingCached) {
+		std::string text = TR("message.cache_updating");
+		float w = measureText(text, 0.38f, 0.38f) + 16.0f;
+		drawRoundedRect((400.0f - w) / 2.0f, 4.0f, 0.65f, w, 16.0f, 8.0f, ScreenManager::colorBackgroundDark());
+		drawCenteredRichText(6.5f, 0.66f, 0.38f, 0.38f, ScreenManager::colorTextMuted(), text, 400.0f);
+	}
+
 	if (isMenuOpen) {
 		renderMenu();
 	}
@@ -3425,8 +3559,11 @@ void MessageScreen::renderBottom(C3D_RenderTarget *target) {
 				hints += "R: " + TR("message.attach_short") + "  ";
 			}
 			hints += "\uE001: " + TR("common.back");
+			if (!isHiddenChannel) {
+				hints += "  L: " + TR("channel_menu.short");
+			}
 		}
-		cachedHints = hints;
+		cachedHints = getTruncatedText(hints, 304.0f, 0.4f, 0.4f);
 	}
 
 	drawText(10.0f, BOTTOM_SCREEN_HEIGHT - 25.0f, 0.5f, 0.4f, 0.4f, ScreenManager::colorTextMuted(), cachedHints);
@@ -3679,7 +3816,7 @@ void MessageScreen::showMessageOptions() {
 	bool playable = false;
 	bool saveable = false;
 	for (const auto &attach : msg.attachments) {
-		playable = playable || isVideoAttachment(attach);
+		playable = playable || isVideoAttachment(attach) || isAudioAttachment(attach);
 		saveable = saveable || hasRemoteFile(attach);
 	}
 	for (const auto &embed : msg.embeds) {
@@ -3690,6 +3827,9 @@ void MessageScreen::showMessageOptions() {
 	}
 	if (!msg.referencedMessageId.empty() && msg.type == 19) {
 		addOption("JumpReply", "message.menu.jump_reply");
+	}
+	if (!findInviteCode(msg.content).empty()) {
+		addOption("OpenInvite", "message.menu.open_invite");
 	}
 	if (!isMine && !msg.author.bot && !msg.author.id.empty() && !msg.isEphemeral()) {
 		const int relation = client.getRelationshipType(msg.author.id);
@@ -3978,6 +4118,25 @@ void MessageScreen::syncScrollAfterRebuild(bool wasAtBottom, bool updateSelectio
 		targetScrollY = maxScroll;
 		currentScrollY = maxScroll;
 	}
+}
+
+bool MessageScreen::isScrolledToBottom() const {
+	float maxScroll = std::max(0.0f, totalContentHeight - 240.0f);
+	return targetScrollY >= maxScroll - 5.0f;
+}
+
+bool MessageScreen::selectMessageById(const std::string &id) {
+	if (id.empty()) {
+		return false;
+	}
+	for (int i = 0; i < (int)messages.size(); i++) {
+		if (messages[i].id == id) {
+			selectedIndex = i;
+			ensureSelectionVisible();
+			return true;
+		}
+	}
+	return false;
 }
 
 void MessageScreen::scrollToBottom() {
@@ -4857,6 +5016,53 @@ void MessageScreen::renderUploadProgress() {
 	drawProgressBar(16.0f, y + 24.0f, 288.0f, 6.0f, fraction, 0.55f);
 }
 
+void MessageScreen::openDmWith(const std::string &userId) {
+	Discord::DiscordClient::getInstance().openDirectMessage(userId, [this, token = aliveToken](const std::string &dmId) {
+		if (!*token) {
+			return;
+		}
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		if (dmId.empty()) {
+			pendingToastText = TR("friends.dm_failed");
+		} else {
+			pendingDmChannel = dmId;
+		}
+	});
+}
+
+void MessageScreen::showChannelMenu() {
+	menuOptions.clear();
+	menuActions.clear();
+	auto addOption = [&](const std::string &actionId, const std::string &key) {
+		menuActions.push_back(actionId);
+		menuOptions.push_back(TR(key));
+	};
+	addOption("ChannelSearch", "channel_menu.search");
+	addOption("ChannelPins", "channel_menu.pins");
+	addOption("ChannelMembers", "channel_menu.members");
+	if (Discord::DiscordClient::getInstance().canCreateInvite(channelId)) {
+		addOption("ChannelInvite", "channel_menu.invite");
+	}
+	addOption("ChannelLatest", "channel_menu.latest");
+	addOption("Cancel", "message.menu.cancel");
+	isMenuOpen = true;
+	menuIndex = 0;
+}
+
+void MessageScreen::openMessageList(MessageListOverlay::Mode mode) {
+	std::string name = channelName.empty() ? TR("message.thread") : channelName;
+	pushOverlay(std::make_unique<MessageListOverlay>(
+	    mode, channelId, guildId, name, [this](const Discord::Message &msg) {
+		    if (msg.channelId.empty() || msg.channelId == channelId) {
+			    jumpToMessage(msg.id);
+			    return;
+		    }
+		    ScreenManager::getInstance().setPendingJump(msg.channelId, msg.id);
+		    Discord::DiscordClient::getInstance().setSelectedChannelId(msg.channelId);
+		    ScreenManager::getInstance().setScreen(ScreenType::MESSAGES);
+	    }));
+}
+
 void MessageScreen::showAttachMenu() {
 	if (!canAttach()) {
 		return;
@@ -4870,10 +5076,40 @@ void MessageScreen::showAttachMenu() {
 	addOption("AttachFile", "attach.file");
 	addOption("AttachGif", "attach.gif");
 	addOption("AttachCamera", "attach.camera");
+	addOption("AttachVoice", "attach.voice");
+	addOption("AttachDoodle", "attach.doodle");
 	addOption("AttachCommand", "attach.command");
 	addOption("Cancel", "message.menu.cancel");
 	isMenuOpen = true;
 	menuIndex = 0;
+}
+
+void MessageScreen::openVoiceRecorder() {
+	pushOverlay(std::make_unique<VoiceRecorder>(
+	    [this](const UploadChoice &choice) { startUpload(choice); },
+	    [this](const std::string &path, const std::vector<uint8_t> &waveform) {
+		    VideoPlayer::Source source;
+		    source.localPath = path;
+		    source.title = TR("voice_msg.preview");
+		    source.audio = true;
+		    source.waveform = waveform;
+		    pushOverlay(std::make_unique<VideoPlayer>(source));
+	    }));
+}
+
+void MessageScreen::openDoodlePad() {
+	pushOverlay(std::make_unique<DoodlePad>([this](const std::string &path, DoodlePad *pad) {
+		const long long limit = Discord::DiscordClient::getInstance().getUploadLimitBytes();
+		// Backing out of the send screen returns to the drawing, which stays open underneath.
+		pushOverlay(std::make_unique<UploadConfirm>(
+		    path, limit, pendingCaption,
+		    [this, pad](const UploadChoice &choice) {
+			    pad->close();
+			    pendingCaption.clear();
+			    startUpload(choice);
+		    },
+		    nullptr));
+	}));
 }
 
 void MessageScreen::openFileBrowser() {
@@ -4942,6 +5178,8 @@ void MessageScreen::startUpload(const UploadChoice &choice) {
 	attach.size = (int)std::max(0LL, Utils::File::fileSize(choice.path));
 	attach.content_type = Utils::File::mimeType(choice.path);
 	attach.spoiler = choice.spoiler;
+	attach.durationSecs = choice.durationSecs;
+	attach.waveform = choice.waveform;
 	pending.attachments.push_back(attach);
 
 	auto progress = std::make_shared<Network::TransferProgress>();
@@ -4959,6 +5197,9 @@ void MessageScreen::startUpload(const UploadChoice &choice) {
 	request.caption = choice.caption;
 	request.spoiler = choice.spoiler;
 	request.nonce = pending.nonce;
+	request.voiceMessage = choice.voiceMessage;
+	request.durationSecs = choice.durationSecs;
+	request.waveform = choice.waveform;
 	Discord::DiscordClient::getInstance().uploadFile(
 	    request, progress,
 	    [this, token = aliveToken, pendingId = pending.id](const Discord::Message &sentMsg, bool success,
@@ -5003,6 +5244,20 @@ bool MessageScreen::playSelectedVideo(bool includeGifs) {
 	for (const auto &attach : msg.attachments) {
 		if (isVideoAttachment(attach)) {
 			playVideo(attach.url.empty() ? attach.proxy_url : attach.url, "", attach.filename, attach.filename, false);
+			return true;
+		}
+		if (isAudioAttachment(attach) && !(attach.spoiler && !revealedSpoilers.count(msg.id))) {
+			VideoPlayer::Source source;
+			source.url = attach.url.empty() ? attach.proxy_url : attach.url;
+			source.fileName = attach.filename;
+			source.audio = true;
+			std::string author = msg.author.global_name.empty() ? msg.author.username : msg.author.global_name;
+			source.title = isVoiceMessage(attach) ? Core::I18n::format(TR("message.voice_from"), author) : attach.filename;
+			if (!attach.waveform.empty()) {
+				std::vector<unsigned char> samples = Utils::Base64::decode(attach.waveform);
+				source.waveform.assign(samples.begin(), samples.end());
+			}
+			pushOverlay(std::make_unique<VideoPlayer>(source));
 			return true;
 		}
 	}
@@ -5150,6 +5405,64 @@ void MessageScreen::jumpToMessage(const std::string &messageId) {
 		    centerOnSelection();
 	    },
 	    messageId);
+}
+
+void MessageScreen::switchChannel(int direction) {
+	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
+	std::string guildId = client.getGuildIdFromChannel(channelId);
+	bool isPrivate = guildId.empty() || guildId == "DM";
+
+	std::vector<Discord::Channel> ordered;
+	std::unique_lock<std::recursive_mutex> clientLock(client.getMutex());
+	if (isPrivate) {
+		ordered = client.getPrivateChannels();
+		std::sort(ordered.begin(), ordered.end(), [](const Discord::Channel &a, const Discord::Channel &b) {
+			return MessageUtils::isNewerSnowflake(a.last_message_id, b.last_message_id);
+		});
+	} else {
+		const Discord::Guild *guild = client.getGuildPtr(guildId);
+		if (guild == nullptr) {
+			return;
+		}
+		ordered = ServerListScreen::orderChannels(*guild);
+	}
+
+	// Threads step from their parent channel.
+	std::string anchorId = channelId;
+	if (const Discord::Channel *current = client.getChannelPtr(channelId)) {
+		if ((current->type == 10 || current->type == 11 || current->type == 12) && !current->parent_id.empty()) {
+			anchorId = current->parent_id;
+		}
+	}
+
+	auto opensHere = [](const Discord::Channel &c) {
+		return c.type == 0 || c.type == 5 || c.type == 1 || c.type == 3;
+	};
+	int current = -1;
+	for (int i = 0; i < (int)ordered.size(); i++) {
+		if (ordered[i].id == anchorId) {
+			current = i;
+			break;
+		}
+	}
+	int target = -1;
+	for (int i = current + direction; current >= 0 && i >= 0 && i < (int)ordered.size(); i += direction) {
+		if (opensHere(ordered[i])) {
+			target = i;
+			break;
+		}
+	}
+	if (target < 0) {
+		ScreenManager::getInstance().showToast(TR(direction > 0 ? "message.last_channel" : "message.first_channel"));
+		return;
+	}
+
+	clientLock.unlock();
+	if (!isPrivate) {
+		ScreenManager::getInstance().setLastChannelIndex(guildId, target);
+	}
+	client.setSelectedChannelId(ordered[target].id);
+	ScreenManager::getInstance().setScreen(ScreenType::MESSAGES);
 }
 
 void MessageScreen::jumpToPresent() {

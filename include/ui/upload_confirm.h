@@ -12,6 +12,10 @@ struct UploadChoice {
 	std::string path;
 	std::string caption;
 	bool spoiler = false;
+	// Voice messages from the recorder.
+	bool voiceMessage = false;
+	double durationSecs = 0.0;
+	std::string waveform;
 };
 
 // Shows a file before it is sent, with a caption and the spoiler flag.

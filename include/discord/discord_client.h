@@ -39,6 +39,9 @@ enum class ConnectionState {
 };
 
 using MessagesCallback = std::function<void(const std::vector<Message> &)>;
+// ok, total results (for paging), this page, and an error hint ("forbidden", "indexing" or empty).
+using MessageListCallback =
+    std::function<void(bool ok, int total, const std::vector<Message> &messages, const std::string &error)>;
 using SingleMessageCallback = std::function<void(const std::optional<Message> &)>;
 using SuccessCallback = std::function<void(bool success)>;
 using ThreadsCallback = std::function<void(const std::vector<Channel> &)>;
@@ -81,6 +84,10 @@ struct UploadRequest {
 	std::string replyId;
 	std::string nonce;
 	bool spoiler = false;
+	// Sent as a voice message (an Ogg Opus file with its length and waveform).
+	bool voiceMessage = false;
+	double durationSecs = 0.0;
+	std::string waveform;
 };
 using MfaSmsCallback = std::function<void(bool success, const std::string &phoneOrError)>;
 using ErrorCallback = std::function<void(const std::string &error)>;
@@ -212,6 +219,21 @@ class DiscordClient {
 
 	void fetchMessagesAsync(const std::string &channelId, int limit, MessagesCallback cb,
 	                        const std::string &around = "");
+	// The last 50 messages fetched for this channel, from the SD card. Never calls back when
+	// there is nothing cached.
+	// The member list Discord last sent for a guild (the channel most recently opened there).
+	MemberList getMemberList(const std::string &guildId);
+	// Invites. Callbacks run on a network thread.
+	void fetchInvite(const std::string &code, std::function<void(bool ok, const InviteInfo &info)> cb);
+	void joinInvite(const std::string &code, std::function<void(bool ok, const std::string &error)> cb);
+	void createInvite(const std::string &channelId, int maxAgeSeconds, int maxUses,
+	                  std::function<void(bool ok, const std::string &code)> cb);
+	bool canCreateInvite(const std::string &channelId);
+	void fetchPinnedMessages(const std::string &channelId, MessageListCallback cb);
+	// Server-wide when channelId is empty; 25 results per page, from offset.
+	void searchMessages(const std::string &guildId, const std::string &channelId, const std::string &query, int offset,
+	                    MessageListCallback cb);
+	void loadCachedMessagesAsync(const std::string &channelId, MessagesCallback cb);
 	void fetchMessagesBeforeAsync(const std::string &channelId, const std::string &beforeId, int limit,
 	                              MessagesCallback cb);
 	void fetchMessage(const std::string &channelId, const std::string &messageId, SingleMessageCallback cb);
@@ -307,7 +329,8 @@ class DiscordClient {
 	void authorizeLoginByPhone(const std::string &phone, const std::string &code, ErrorCallback cb);
 	void revokeToken(const std::string &token);
 
-	void sendLazyRequest(const std::string &guildId, const std::string &channelId);
+	// upTo: the furthest member list row wanted; rows come in windows of 100.
+	void sendLazyRequest(const std::string &guildId, const std::string &channelId, int upTo = 99);
 
 	void votePoll(const std::string &channelId, const std::string &messageId, const std::vector<int> &answerIds);
 
@@ -319,6 +342,8 @@ class DiscordClient {
 	void markChannelReadLatest(const std::string &channelId, const std::string &seenMessageId = "");
 	void markGuildRead(const std::string &guildId);
 	void updatePresence(UserStatus status);
+	// Temporary Idle while the lid is closed; never saved to the account's settings.
+	void setAutoIdle(bool idle);
 	void setGuildMuted(const std::string &guildId, bool muted, int timeWindowMinutes);
 	void setChannelMuted(const std::string &channelId, bool muted, int timeWindowMinutes);
 	// messageNotifications: 0=all, 1=mentions, 2=none (3=inherit, channel only)
@@ -458,6 +483,10 @@ class DiscordClient {
 
 	User self;
 	User currentUser;
+	bool autoIdle = false;
+	std::map<std::string, MemberList> memberLists;
+	void applyMemberListUpdate(const rapidjson::Value &d);
+	MemberListItem parseMemberListItem(const rapidjson::Value &item);
 	std::vector<Guild> guilds;
 	std::vector<Channel> privateChannels;
 	std::vector<GuildFolder> folders;

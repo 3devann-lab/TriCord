@@ -25,7 +25,8 @@ enum class ScreenType {
 	ABOUT,
 	DISCLAIMER,
 	THEME_MANAGER,
-	FRIENDS
+	FRIENDS,
+	UPDATER
 };
 
 class Screen {
@@ -141,6 +142,19 @@ class ScreenManager {
 			expandedFolders.erase(id);
 		}
 	}
+	// Opening a channel to show one message: the next MessageScreen for channelId jumps to it.
+	void setPendingJump(const std::string &channelId, const std::string &messageId) {
+		pendingJumpChannel = channelId;
+		pendingJumpMessage = messageId;
+	}
+	std::string takePendingJump(const std::string &channelId) {
+		if (channelId != pendingJumpChannel) {
+			return "";
+		}
+		pendingJumpChannel.clear();
+		return std::move(pendingJumpMessage);
+	}
+
 	bool isFolderExpanded(const std::string &id) { return expandedFolders.find(id) != expandedFolders.end(); }
 
   private:
@@ -178,6 +192,8 @@ class ScreenManager {
 	std::map<std::string, int> lastForumScroll;
 
 	std::set<std::string> expandedFolders;
+	std::string pendingJumpChannel;
+	std::string pendingJumpMessage;
 
 	void drawHamburgerButton();
 	void drawToast();
@@ -212,6 +228,11 @@ float measureRichTextUnicodeOnly(const std::string &rawText, float scaleX, float
 
 std::string getTruncatedText(const std::string &text, float maxWidth, float scaleX, float scaleY);
 std::string getTruncatedRichText(const std::string &rawText, float maxWidth, float scaleX, float scaleY);
+
+// Wi-Fi bars, battery and charge level, right-aligned to rightX.
+void drawStatusIndicator(float rightX, float y, float z);
+// Width drawStatusIndicator takes, or 0 when it is turned off.
+float statusIndicatorWidth();
 
 void drawOverlay(float z);
 void drawPopupBackground(float x, float y, float w, float h, float z, float radius = 12.0f);

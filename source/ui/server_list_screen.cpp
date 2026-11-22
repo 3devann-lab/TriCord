@@ -267,45 +267,17 @@ void ServerListScreen::subscribeHighlightedGuild() {
 	}
 }
 
-void ServerListScreen::refreshChannels() {
-	Logger::log("ServerListScreen::refreshChannels() start");
-	sortedChannels.clear();
-	if (listItems.empty() || selectedIndex < 0 || selectedIndex >= (int)listItems.size()) {
-		Logger::log("ServerListScreen::refreshChannels() quick return");
-		return;
-	}
-
-	const auto &item = listItems[selectedIndex];
-	if (item.isFolder) {
-		return;
-	}
-
-	if (item.isDm) {
-		sortedChannels = Discord::DiscordClient::getInstance().getPrivateChannels();
-		std::sort(sortedChannels.begin(), sortedChannels.end(),
-		          [](const Discord::Channel &a, const Discord::Channel &b) {
-			          if (a.last_message_id.length() != b.last_message_id.length()) {
-				          return a.last_message_id.length() > b.last_message_id.length();
-			          }
-			          return a.last_message_id > b.last_message_id;
-		          });
-		return;
-	}
-
-	const auto *guild = getGuild(item.id);
-	if (!guild) {
-		return;
-	}
-
+std::vector<Discord::Channel> ServerListScreen::orderChannels(const Discord::Guild &guild) {
+	std::vector<Discord::Channel> ordered;
 	std::vector<Discord::Channel> viewableChannels;
 	std::vector<Discord::Channel> categories;
 
 	Discord::DiscordClient &client = Discord::DiscordClient::getInstance();
 	const auto &currentUser = client.getCurrentUser();
-	bool isOwner = (guild->ownerId == currentUser.id);
+	bool isOwner = (guild.ownerId == currentUser.id);
 
 	bool showHidden = Config::getInstance().isShowHiddenChannelsEnabled();
-	for (const auto &ch : guild->channels) {
+	for (const auto &ch : guild.channels) {
 		if (ch.type == 4) {
 			categories.push_back(ch);
 		} else if (ch.viewable || isOwner || showHidden) {
@@ -345,7 +317,7 @@ void ServerListScreen::refreshChannels() {
 
 	for (const auto &ch : viewableChannels) {
 		if (ch.parent_id.empty()) {
-			sortedChannels.push_back(ch);
+			ordered.push_back(ch);
 		}
 	}
 
@@ -360,15 +332,80 @@ void ServerListScreen::refreshChannels() {
 
 		if (hasVisibleChildren || isOwner) {
 			if (hasVisibleChildren) {
-				sortedChannels.push_back(cat);
+				ordered.push_back(cat);
 				for (const auto &ch : viewableChannels) {
 					if (ch.parent_id == cat.id) {
-						sortedChannels.push_back(ch);
+						ordered.push_back(ch);
 					}
 				}
 			}
 		}
 	}
+	return ordered;
+}
+
+void ServerListScreen::switchServer(int direction) {
+	auto &sm = ScreenManager::getInstance();
+	int target = selectedIndex + direction;
+	while (target >= 0 && target < (int)listItems.size() && listItems[target].isFolder) {
+		target += direction;
+	}
+	if (target < 0 || target >= (int)listItems.size()) {
+		return;
+	}
+	selectedIndex = target;
+	if (selectedIndex < scrollOffset) {
+		scrollOffset = selectedIndex;
+	} else if (selectedIndex >= scrollOffset + 5) {
+		scrollOffset = selectedIndex - 4;
+	}
+	sm.setLastServerIndex(selectedIndex);
+	sm.setLastServerScroll(scrollOffset);
+
+	const auto &item = listItems[selectedIndex];
+	sm.setSelectedGuildId(item.id);
+	refreshChannels();
+	channelScrollOffset = 0;
+	selectFirstChannel();
+	sm.setLastChannelIndex(item.id, selectedChannelIndex);
+	sm.setLastChannelScroll(item.id, channelScrollOffset);
+	if (!item.isDm) {
+		Discord::DiscordClient::getInstance().fetchGuildDetails(item.id);
+	}
+	Utils::requestRedraw();
+}
+
+void ServerListScreen::refreshChannels() {
+	Logger::log("ServerListScreen::refreshChannels() start");
+	sortedChannels.clear();
+	if (listItems.empty() || selectedIndex < 0 || selectedIndex >= (int)listItems.size()) {
+		Logger::log("ServerListScreen::refreshChannels() quick return");
+		return;
+	}
+
+	const auto &item = listItems[selectedIndex];
+	if (item.isFolder) {
+		return;
+	}
+
+	if (item.isDm) {
+		sortedChannels = Discord::DiscordClient::getInstance().getPrivateChannels();
+		std::sort(sortedChannels.begin(), sortedChannels.end(),
+		          [](const Discord::Channel &a, const Discord::Channel &b) {
+			          if (a.last_message_id.length() != b.last_message_id.length()) {
+				          return a.last_message_id.length() > b.last_message_id.length();
+			          }
+			          return a.last_message_id > b.last_message_id;
+		          });
+		return;
+	}
+
+	const auto *guild = getGuild(item.id);
+	if (!guild) {
+		return;
+	}
+
+	sortedChannels = orderChannels(*guild);
 
 	updateUnreadCache();
 }
@@ -1230,6 +1267,24 @@ void ServerListScreen::update() {
 	}
 	if (!(kHeld & (KEY_DOWN | KEY_UP))) {
 		lastKey = 0;
+	}
+
+	// New 3DS: the C-stick scrolls the list quickly; ZL/ZR step between servers.
+	if (moveDir == 0 && (kHeld & (KEY_CSTICK_UP | KEY_CSTICK_DOWN))) {
+		if (--cstickTimer <= 0) {
+			moveDir = (kHeld & KEY_CSTICK_DOWN) ? KEY_DOWN : KEY_UP;
+			cstickTimer = 4;
+		}
+	} else {
+		cstickTimer = 0;
+	}
+	if (kDown & (KEY_ZL | KEY_ZR)) {
+		if (state == State::SELECTING_SERVER) {
+			moveDir = (kDown & KEY_ZR) ? KEY_DOWN : KEY_UP;
+		} else if (state == State::SELECTING_CHANNEL) {
+			switchServer((kDown & KEY_ZR) ? 1 : -1);
+			return;
+		}
 	}
 
 	if (state == State::SELECTING_SERVER) {
@@ -2214,7 +2269,7 @@ void ServerListScreen::renderBottom(C3D_RenderTarget *target) {
 				}
 
 				drawRichText(headerX, 8.5f, 0.5f, 0.55f, 0.55f, ScreenManager::colorAccent(),
-				             getTruncatedRichText(guild->name, 305.0f - headerX, 0.55f, 0.55f));
+				             getTruncatedRichText(guild->name, 305.0f - headerX - statusIndicatorWidth(), 0.55f, 0.55f));
 
 				C2D_DrawRectSolid(10, 32, 0.5f, 320 - 20, 1, ScreenManager::colorSeparator());
 

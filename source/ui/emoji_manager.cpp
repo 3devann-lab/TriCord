@@ -1,4 +1,5 @@
 #include "ui/emoji_manager.h"
+#include "network/media_cache.h"
 #include "log.h"
 #include "network/network_manager.h"
 #include "utils/image_utils.h"
@@ -422,8 +423,8 @@ void EmojiManager::prefetchEmoji(const std::string &emojiId, bool animated) {
 		}
 	}
 
-	Network::NetworkManager::getInstance().enqueue(
-	    emojiUrl(emojiId, ".png"), "GET", "", Network::RequestPriority::INTERACTIVE,
+	Network::MediaCache::fetch(
+	    emojiUrl(emojiId, ".png"), Network::RequestPriority::INTERACTIVE,
 	    [this, emojiId](Network::HttpResponse &resp) {
 		    Utils::Image::TiledData tiled;
 		    if (resp.statusCode == 200 && !resp.body.empty()) {

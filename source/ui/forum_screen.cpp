@@ -245,7 +245,7 @@ void ForumScreen::renderBottom(C3D_RenderTarget *target) {
 		headerX = 50.0f;
 	}
 
-	std::string dispNameBottom = getTruncatedRichText(channelName, 310.0f - headerX, 0.6f, 0.6f);
+	std::string dispNameBottom = getTruncatedRichText(channelName, 310.0f - headerX - statusIndicatorWidth(), 0.6f, 0.6f);
 
 	drawRichText(headerX, 10.0f, 0.5f, 0.6f, 0.6f, ScreenManager::colorText(), dispNameBottom);
 

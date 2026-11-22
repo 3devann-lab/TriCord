@@ -1,6 +1,7 @@
 #ifndef MESSAGE_SCREEN_H
 #define MESSAGE_SCREEN_H
 
+#include "ui/message_list_overlay.h"
 #include "discord/types.h"
 #include "ui/screen_manager.h"
 #include "ui/emoji_picker.h"
@@ -179,6 +180,11 @@ class MessageScreen : public Screen {
 	std::vector<std::string> revertChosen;
 	std::string revertChosenLabel;
 	bool wasAtBottom = false;
+	// Showing the SD card copy while the real history loads.
+	bool showingCached = false;
+	bool freshHistoryLoaded = false;
+	bool isScrolledToBottom() const;
+	bool selectMessageById(const std::string &id);
 	std::string lastMarkedMessageId;
 	std::vector<std::string> menuOptions;
 	std::vector<std::string> menuActions;
@@ -228,6 +234,15 @@ class MessageScreen : public Screen {
 	bool viewingHistory = false;
 	void jumpToMessage(const std::string &messageId);
 	void jumpToPresent();
+	// ZL/ZR: the previous or next text channel in the same server (or DM list).
+	void switchChannel(int direction);
+	void showChannelMenu();
+	void openDmWith(const std::string &userId);
+	void openVoiceRecorder();
+	void openDoodlePad();
+	void openMessageList(MessageListOverlay::Mode mode);
+	// A search result in another channel opens that channel and jumps once it has loaded.
+	std::string pendingJumpId;
 	void centerOnSelection();
 	void renderUploadProgress();
 	void renderAttachButton(float x, float y);

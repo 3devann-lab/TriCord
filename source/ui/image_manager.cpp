@@ -1,4 +1,5 @@
 #include "ui/image_manager.h"
+#include "network/media_cache.h"
 #include "log.h"
 #include "network/network_manager.h"
 #include "utils/apng_decoder.h"
@@ -399,8 +400,8 @@ void ImageManager::prefetch(const std::string &url, int origW, int origH, Networ
 	}
 
 	int sessionId = currentSessionId;
-	Network::NetworkManager::getInstance().enqueue(
-	    optimizedUrl, "GET", "", priority, [this, url, sessionId, priority, animatedDim](Network::HttpResponse &resp) {
+	Network::MediaCache::fetch(
+	    optimizedUrl, priority, [this, url, sessionId, priority, animatedDim](Network::HttpResponse &resp) {
 		    if (currentSessionId != sessionId) {
 			    return;
 		    }

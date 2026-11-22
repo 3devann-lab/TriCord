@@ -1,3 +1,7 @@
+#include "network/media_cache.h"
+#include "utils/file_utils.h"
+#include "core/system_status.h"
+#include "utils/markdown.h"
 #include "discord/discord_client.h"
 #include "core/config.h"
 #include "discord/avatar_cache.h"
@@ -1176,7 +1180,7 @@ void DiscordClient::handleDispatch(const rapidjson::Document &doc) {
 	} else if (t == "PRESENCE_UPDATE") {
 		handlePresenceUpdate(d);
 	} else if (t == "GUILD_MEMBER_LIST_UPDATE") {
-		// Only read for presences: the member list itself is not shown.
+		applyMemberListUpdate(d);
 		if (d.HasMember("ops") && d["ops"].IsArray()) {
 			auto takeItem = [this](const rapidjson::Value &item) {
 				if (item.IsObject() && item.HasMember("member") && item["member"].IsObject()) {
@@ -2177,6 +2181,24 @@ void DiscordClient::handleMessageCreate(const rapidjson::Value &d) {
 		Utils::SoundPlayer::getInstance().play(Utils::Sound::NOTIFICATION);
 	}
 
+	if (playSound && (isPrivate || mentioned)) {
+		std::string author = msg.author.global_name.empty() ? msg.author.username : msg.author.global_name;
+		std::string preview = Utils::Markdown::stripFormatting(msg.content);
+		if (preview.empty() && !msg.attachments.empty()) {
+			preview = Core::I18n::getInstance().get("notify.attachment");
+		} else if (preview.empty() && !msg.stickers.empty()) {
+			preview = Core::I18n::getInstance().get("notify.sticker");
+		}
+		std::string title = author;
+		if (!isPrivate) {
+			const Channel *ch = getChannelPtr(msg.channelId);
+			std::string where = (ch && !ch->name.empty()) ? "#" + ch->name : std::string();
+			title = where.empty() ? author : where;
+			preview = author + ": " + preview;
+		}
+		Core::SystemStatus::notifyMessage(title, preview);
+	}
+
 	// Any message in an unmuted private channel counts towards the badge.
 	if (mentioned || isPrivate) {
 		auto &rs = readStates[msg.channelId];
@@ -2915,6 +2937,10 @@ Attachment DiscordClient::parseAttachmentObject(const rapidjson::Value &aObj) {
 	attachment.width = Utils::Json::getInt(aObj, "width");
 	attachment.height = Utils::Json::getInt(aObj, "height");
 	attachment.content_type = Utils::Json::getString(aObj, "content_type");
+	attachment.waveform = Utils::Json::getString(aObj, "waveform");
+	if (aObj.HasMember("duration_secs") && aObj["duration_secs"].IsNumber()) {
+		attachment.durationSecs = aObj["duration_secs"].GetDouble();
+	}
 	// The prefix is how clients mark a spoiler on upload; the docs only describe the flag.
 	attachment.spoiler =
 	    (Utils::Json::getInt(aObj, "flags") & ATTACHMENT_FLAG_SPOILER) || attachment.filename.rfind("SPOILER_", 0) == 0;
@@ -3502,12 +3528,16 @@ void DiscordClient::fetchMessagesAsync(const std::string &channelId, int limit, 
 		url += "&around=" + aroundId;
 	}
 
+	bool cacheable = aroundId.empty() && limit >= 50;
 	Network::NetworkManager::getInstance().enqueue(
 	    url, "GET", "", Network::RequestPriority::INTERACTIVE,
-	    [this, cb, channelId](const Network::HttpResponse &resp) {
+	    [this, cb, channelId, cacheable](const Network::HttpResponse &resp) {
 		    std::vector<Message> messages;
 		    if (resp.success && resp.statusCode == 200) {
 			    messages = parseMessages(resp.body);
+			    if (cacheable && !messages.empty()) {
+				    Network::MediaCache::storeMessages(getCurrentUser().id, channelId, resp.body);
+			    }
 			    if (messages.empty()) {
 
 				    Logger::log("Fetched 0 messages for channel %s. Body len: %zu", channelId.c_str(),
@@ -3579,6 +3609,339 @@ void DiscordClient::fetchMessage(const std::string &channelId, const std::string
 		                                               }
 	                                               },
 	                                               {{"Authorization", token}});
+}
+
+void DiscordClient::loadCachedMessagesAsync(const std::string &channelId, MessagesCallback cb) {
+	std::string userId = getCurrentUser().id;
+	if (!Config::getInstance().isMessageCacheEnabled() || userId.empty() || channelId.empty()) {
+		return;
+	}
+	Network::MediaCache::runJob([this, userId, channelId, cb] {
+		std::vector<char> raw = Utils::File::readFile(Network::MediaCache::messagesPath(userId, channelId));
+		if (raw.empty()) {
+			return;
+		}
+		std::vector<Message> messages = parseMessages(std::string(raw.data()));
+		if (!messages.empty() && cb) {
+			cb(messages);
+		}
+	});
+}
+
+void DiscordClient::fetchPinnedMessages(const std::string &channelId, MessageListCallback cb) {
+	if (channelId.empty() || token.empty()) {
+		cb(false, 0, {}, "");
+		return;
+	}
+	// The newer endpoint wraps each message as {pinned_at, message}; the older one is a bare array.
+	auto parse = [this](const std::string &body, std::vector<Message> &out) {
+		rapidjson::Document doc;
+		doc.Parse(body.c_str());
+		if (doc.HasParseError()) {
+			return false;
+		}
+		if (doc.IsArray()) {
+			for (rapidjson::SizeType i = 0; i < doc.Size(); i++) {
+				if (doc[i].IsObject()) {
+					out.push_back(parseSingleMessage(doc[i]));
+				}
+			}
+			return true;
+		}
+		if (doc.IsObject() && doc.HasMember("items") && doc["items"].IsArray()) {
+			for (const auto &item : doc["items"].GetArray()) {
+				if (item.IsObject() && item.HasMember("message") && item["message"].IsObject()) {
+					out.push_back(parseSingleMessage(item["message"]));
+				}
+			}
+			return true;
+		}
+		return false;
+	};
+
+	std::string auth = token;
+	std::string base = "https://discord.com/api/v10/channels/" + channelId;
+	Network::NetworkManager::getInstance().enqueue(
+	    base + "/messages/pins?limit=50", "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [base, auth, cb, parse](Network::HttpResponse &resp) {
+		    std::vector<Message> pins;
+		    if (resp.statusCode == 200 && parse(resp.body, pins)) {
+			    cb(true, (int)pins.size(), pins, "");
+			    return;
+		    }
+		    Network::NetworkManager::getInstance().enqueue(
+		        base + "/pins", "GET", "", Network::RequestPriority::INTERACTIVE,
+		        [cb, parse](Network::HttpResponse &old) {
+			        std::vector<Message> pins;
+			        if (old.statusCode == 200 && parse(old.body, pins)) {
+				        cb(true, (int)pins.size(), pins, "");
+			        } else {
+				        cb(false, 0, {}, old.statusCode == 403 ? "forbidden" : "");
+			        }
+		        },
+		        {{"Authorization", auth}});
+	    },
+	    {{"Authorization", auth}});
+}
+
+void DiscordClient::searchMessages(const std::string &guildId, const std::string &channelId, const std::string &query,
+                                   int offset, MessageListCallback cb) {
+	if (token.empty() || query.empty()) {
+		cb(false, 0, {}, "");
+		return;
+	}
+	bool inGuild = !guildId.empty() && guildId != "DM";
+	std::string url = inGuild ? "https://discord.com/api/v10/guilds/" + guildId + "/messages/search?"
+	                          : "https://discord.com/api/v10/channels/" + channelId + "/messages/search?";
+	url += "content=" + urlEncode(query);
+	if (inGuild && !channelId.empty()) {
+		url += "&channel_id=" + channelId;
+	}
+	if (offset > 0) {
+		url += "&offset=" + std::to_string(offset);
+	}
+
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [this, cb](Network::HttpResponse &resp) {
+		    // 202: Discord is still indexing this server; the caller asks again shortly.
+		    if (resp.statusCode != 200) {
+			    cb(false, 0, {}, resp.statusCode == 403 ? "forbidden" : (resp.statusCode == 202 ? "indexing" : ""));
+			    return;
+		    }
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (doc.HasParseError() || !doc.IsObject() || !doc.HasMember("messages") || !doc["messages"].IsArray()) {
+			    cb(false, 0, {}, "");
+			    return;
+		    }
+		    int total = doc.HasMember("total_results") && doc["total_results"].IsInt() ? doc["total_results"].GetInt() : 0;
+		    std::vector<Message> found;
+		    for (const auto &group : doc["messages"].GetArray()) {
+			    // Each hit is an array holding the matching message.
+			    if (group.IsArray() && group.Size() > 0 && group[0].IsObject()) {
+				    found.push_back(parseSingleMessage(group[0]));
+			    } else if (group.IsObject()) {
+				    found.push_back(parseSingleMessage(group));
+			    }
+		    }
+		    cb(true, total, found, "");
+	    },
+	    {{"Authorization", token}});
+}
+
+MemberListItem DiscordClient::parseMemberListItem(const rapidjson::Value &item) {
+	MemberListItem out;
+	if (!item.IsObject()) {
+		return out;
+	}
+	if (item.HasMember("group") && item["group"].IsObject()) {
+		const rapidjson::Value &g = item["group"];
+		out.isGroup = true;
+		if (g.HasMember("id") && g["id"].IsString()) {
+			out.groupId = g["id"].GetString();
+		}
+		if (g.HasMember("count") && g["count"].IsInt()) {
+			out.count = g["count"].GetInt();
+		}
+		return out;
+	}
+	if (item.HasMember("member") && item["member"].IsObject()) {
+		const rapidjson::Value &m = item["member"];
+		if (m.HasMember("user") && m["user"].IsObject()) {
+			out.user = parseUserObject(m["user"]);
+		}
+		if (m.HasMember("nick") && m["nick"].IsString()) {
+			out.nick = m["nick"].GetString();
+		}
+		if (m.HasMember("roles") && m["roles"].IsArray()) {
+			for (const auto &r : m["roles"].GetArray()) {
+				if (r.IsString()) {
+					out.roles.push_back(r.GetString());
+				}
+			}
+		}
+		if (m.HasMember("presence") && m["presence"].IsObject() && m["presence"].HasMember("status") &&
+		    m["presence"]["status"].IsString()) {
+			out.status = stringToStatus(m["presence"]["status"].GetString());
+		}
+	}
+	return out;
+}
+
+void DiscordClient::applyMemberListUpdate(const rapidjson::Value &d) {
+	if (!d.HasMember("guild_id") || !d["guild_id"].IsString()) {
+		return;
+	}
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	MemberList &list = memberLists[d["guild_id"].GetString()];
+	std::string listId = d.HasMember("id") && d["id"].IsString() ? d["id"].GetString() : "";
+	if (list.listId != listId) {
+		list = MemberList();
+		list.listId = listId;
+	}
+	if (d.HasMember("member_count") && d["member_count"].IsInt()) {
+		list.memberCount = d["member_count"].GetInt();
+	}
+	if (d.HasMember("online_count") && d["online_count"].IsInt()) {
+		list.onlineCount = d["online_count"].GetInt();
+	}
+	if (!d.HasMember("ops") || !d["ops"].IsArray()) {
+		return;
+	}
+	auto &items = list.items;
+	for (const auto &op : d["ops"].GetArray()) {
+		if (!op.IsObject() || !op.HasMember("op") || !op["op"].IsString()) {
+			continue;
+		}
+		std::string kind = op["op"].GetString();
+		int index = op.HasMember("index") && op["index"].IsInt() ? op["index"].GetInt() : -1;
+		if (kind == "SYNC" && op.HasMember("range") && op["range"].IsArray() && op["range"].Size() == 2 &&
+		    op.HasMember("items") && op["items"].IsArray()) {
+			int start = std::max(0, op["range"][0].GetInt());
+			int end = op["range"][1].GetInt();
+			int n = (int)op["items"].Size();
+			if (n > 0 && (int)items.size() < start + n) {
+				items.resize(start + n);
+			}
+			for (int i = 0; i < n; i++) {
+				items[start + i] = parseMemberListItem(op["items"][i]);
+			}
+			// Fewer rows than the window asked for: the list ends here.
+			if (start + n - 1 < end && (int)items.size() > start + n) {
+				items.resize(start + n);
+			}
+		} else if (kind == "INSERT" && index >= 0 && op.HasMember("item")) {
+			if (index > (int)items.size()) {
+				items.resize(index);
+			}
+			items.insert(items.begin() + index, parseMemberListItem(op["item"]));
+		} else if (kind == "UPDATE" && index >= 0 && op.HasMember("item")) {
+			if (index >= (int)items.size()) {
+				items.resize(index + 1);
+			}
+			items[index] = parseMemberListItem(op["item"]);
+		} else if (kind == "DELETE" && index >= 0 && index < (int)items.size()) {
+			items.erase(items.begin() + index);
+		} else if (kind == "INVALIDATE" && op.HasMember("range") && op["range"].IsArray() && op["range"].Size() == 2) {
+			int start = std::max(0, op["range"][0].GetInt());
+			int end = std::min((int)items.size() - 1, op["range"][1].GetInt());
+			for (int i = start; i <= end; i++) {
+				items[i] = MemberListItem();
+			}
+		}
+	}
+	list.version++;
+}
+
+MemberList DiscordClient::getMemberList(const std::string &guildId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	auto it = memberLists.find(guildId);
+	return it == memberLists.end() ? MemberList() : it->second;
+}
+
+void DiscordClient::fetchInvite(const std::string &code, std::function<void(bool ok, const InviteInfo &info)> cb) {
+	std::string url = "https://discord.com/api/v10/invites/" + urlEncode(code) + "?with_counts=true";
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [this, code, cb](Network::HttpResponse &resp) {
+		    InviteInfo info;
+		    info.code = code;
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (resp.statusCode != 200 || doc.HasParseError() || !doc.IsObject()) {
+			    cb(false, info);
+			    return;
+		    }
+		    auto str = [](const rapidjson::Value &obj, const char *key) {
+			    return obj.HasMember(key) && obj[key].IsString() ? std::string(obj[key].GetString()) : std::string();
+		    };
+		    if (doc.HasMember("guild") && doc["guild"].IsObject()) {
+			    const rapidjson::Value &g = doc["guild"];
+			    info.guildId = str(g, "id");
+			    info.guildName = str(g, "name");
+			    info.guildIcon = str(g, "icon");
+			    info.guildDescription = str(g, "description");
+		    }
+		    if (doc.HasMember("channel") && doc["channel"].IsObject()) {
+			    const rapidjson::Value &c = doc["channel"];
+			    info.channelId = str(c, "id");
+			    info.channelName = str(c, "name");
+			    info.isGroupDm = c.HasMember("type") && c["type"].IsInt() && c["type"].GetInt() == 3;
+		    }
+		    if (doc.HasMember("inviter") && doc["inviter"].IsObject()) {
+			    User inviter = parseUserObject(doc["inviter"]);
+			    info.inviterName = inviter.global_name.empty() ? inviter.username : inviter.global_name;
+		    }
+		    if (doc.HasMember("approximate_member_count") && doc["approximate_member_count"].IsInt()) {
+			    info.memberCount = doc["approximate_member_count"].GetInt();
+		    }
+		    if (doc.HasMember("approximate_presence_count") && doc["approximate_presence_count"].IsInt()) {
+			    info.onlineCount = doc["approximate_presence_count"].GetInt();
+		    }
+		    cb(true, info);
+	    },
+	    {{"Authorization", token}});
+}
+
+void DiscordClient::joinInvite(const std::string &code, std::function<void(bool ok, const std::string &error)> cb) {
+	std::string url = "https://discord.com/api/v10/invites/" + urlEncode(code);
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "POST", "{}", Network::RequestPriority::INTERACTIVE,
+	    [cb](Network::HttpResponse &resp) {
+		    if (resp.statusCode == 200) {
+			    cb(true, "");
+			    return;
+		    }
+		    // Discord asks for a captcha on some joins, which this app cannot show.
+		    std::string error = resp.body.find("captcha") != std::string::npos ? "captcha" : "";
+		    if (resp.statusCode == 403 || resp.statusCode == 404) {
+			    error = error.empty() ? "invalid" : error;
+		    }
+		    Logger::log("[Invite] Join failed: %ld %s", resp.statusCode, resp.body.substr(0, 200).c_str());
+		    cb(false, error);
+	    },
+	    {{"Authorization", token}, {"Content-Type", "application/json"}});
+}
+
+void DiscordClient::createInvite(const std::string &channelId, int maxAgeSeconds, int maxUses,
+                                 std::function<void(bool ok, const std::string &code)> cb) {
+	std::string url = "https://discord.com/api/v10/channels/" + channelId + "/invites";
+	std::string body = "{\"max_age\":" + std::to_string(maxAgeSeconds) + ",\"max_uses\":" + std::to_string(maxUses) +
+	                   ",\"temporary\":false,\"unique\":false}";
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "POST", body, Network::RequestPriority::INTERACTIVE,
+	    [cb](Network::HttpResponse &resp) {
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (resp.statusCode == 200 && !doc.HasParseError() && doc.IsObject() && doc.HasMember("code") &&
+		        doc["code"].IsString()) {
+			    cb(true, doc["code"].GetString());
+		    } else {
+			    cb(false, "");
+		    }
+	    },
+	    {{"Authorization", token}, {"Content-Type", "application/json"}});
+}
+
+bool DiscordClient::canCreateInvite(const std::string &channelId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	const std::string guildId = getGuildIdFromChannel(channelId);
+	if (guildId.empty() || guildId == "DM") {
+		return false;
+	}
+	for (const auto &guild : guilds) {
+		if (guild.id != guildId) {
+			continue;
+		}
+		for (const auto &channel : guild.channels) {
+			if (channel.id == channelId) {
+				const uint64_t perms = computeChannelPermissions(guild, channel, currentUser.id, guild.myRoles);
+				return (perms & (Permissions::CREATE_INSTANT_INVITE | Permissions::ADMINISTRATOR)) != 0;
+			}
+		}
+	}
+	return false;
 }
 
 std::vector<Message> DiscordClient::parseMessages(const std::string &json) {
@@ -4078,7 +4441,7 @@ void DiscordClient::uploadFile(const UploadRequest &request, std::shared_ptr<Net
 	writer.Key("tts");
 	writer.Bool(false);
 	writer.Key("flags");
-	writer.Int(0);
+	writer.Int(request.voiceMessage ? (1 << 13) : 0);
 	if (!request.replyId.empty()) {
 		writer.Key("message_reference");
 		writer.StartObject();
@@ -4093,6 +4456,12 @@ void DiscordClient::uploadFile(const UploadRequest &request, std::shared_ptr<Net
 	writer.String("0");
 	writer.Key("filename");
 	writer.String(filename.c_str());
+	if (request.voiceMessage) {
+		writer.Key("duration_secs");
+		writer.Double(request.durationSecs);
+		writer.Key("waveform");
+		writer.String(request.waveform.c_str());
+	}
 	writer.EndObject();
 	writer.EndArray();
 	writer.EndObject();
@@ -4805,7 +5174,7 @@ void DiscordClient::revokeToken(const std::string &token) {
 	    {{"Authorization", token}, {"Content-Type", "application/json"}});
 }
 
-void DiscordClient::sendLazyRequest(const std::string &guildId, const std::string &channelId) {
+void DiscordClient::sendLazyRequest(const std::string &guildId, const std::string &channelId, int upTo) {
 	if (guildId.empty() || channelId.empty() || guildId == "DM") {
 		return;
 	}
@@ -4836,10 +5205,17 @@ void DiscordClient::sendLazyRequest(const std::string &guildId, const std::strin
 	writer.StartObject();
 	writer.Key(channelId.c_str());
 	writer.StartArray();
-	writer.StartArray();
-	writer.Int(0);
-	writer.Int(99);
-	writer.EndArray();
+	// The first window always, plus the one holding upTo and the one after it.
+	int window = std::max(1, std::max(0, upTo) / 100);
+	for (int w : {0, window, window + 1}) {
+		if (w == window + 1 && upTo < 100) {
+			break;
+		}
+		writer.StartArray();
+		writer.Int(w * 100);
+		writer.Int(w * 100 + 99);
+		writer.EndArray();
+	}
 	writer.EndArray();
 	writer.EndObject();
 
@@ -5032,9 +5408,8 @@ void DiscordClient::updateVoiceState(const std::string &guildId, const std::stri
 	Logger::log("[Voice] Sent Update Voice State (Op 4) guild=%s channel=%s", guildId.c_str(), channelId.c_str());
 }
 
-void DiscordClient::updatePresence(UserStatus status) {
+static std::string presencePayload(UserStatus status, bool afk) {
 	std::string statusStr = statusToString(status);
-
 	rapidjson::StringBuffer s;
 	rapidjson::Writer<rapidjson::StringBuffer> writer(s);
 	writer.StartObject();
@@ -5054,11 +5429,33 @@ void DiscordClient::updatePresence(UserStatus status) {
 	writer.Key("status");
 	writer.String(statusStr.c_str());
 	writer.Key("afk");
-	writer.Bool(false);
+	writer.Bool(afk);
 	writer.EndObject();
 	writer.EndObject();
+	return s.GetString();
+}
 
-	queueSend(s.GetString());
+void DiscordClient::setAutoIdle(bool idle) {
+	UserStatus chosen;
+	{
+		std::lock_guard<std::recursive_mutex> lock(clientMutex);
+		chosen = currentUser.status == UserStatus::UNKNOWN ? UserStatus::ONLINE : currentUser.status;
+		if (autoIdle == idle) {
+			return;
+		}
+		autoIdle = idle;
+	}
+	// Do Not Disturb, Invisible and a chosen Idle stay as they are.
+	if (chosen != UserStatus::ONLINE || getState() != ConnectionState::READY) {
+		return;
+	}
+	queueSend(presencePayload(idle ? UserStatus::IDLE : UserStatus::ONLINE, idle));
+	Logger::log("[Presence] Lid %s: %s", idle ? "closed" : "opened", idle ? "idle" : "online");
+}
+
+void DiscordClient::updatePresence(UserStatus status) {
+	std::string statusStr = statusToString(status);
+	queueSend(presencePayload(status, false));
 
 	if (!token.empty()) {
 		std::string url = "https://discord.com/api/v10/users/@me/settings";

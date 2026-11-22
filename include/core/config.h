@@ -152,6 +152,27 @@ class Config {
 	bool isGoogleDnsEnabled() const { return googleDns; }
 	void setGoogleDnsEnabled(bool enabled);
 
+	// Battery and Wi-Fi icons in the bottom screen header.
+	bool isStatusBarEnabled() const { return statusBar; }
+	void setStatusBarEnabled(bool enabled);
+	// Blink the notification light for DMs and mentions.
+	bool isNotifyLedEnabled() const { return notifyLed; }
+	void setNotifyLedEnabled(bool enabled);
+	// Post DMs and mentions to the HOME Menu Notifications applet.
+	bool isHomeNotificationsEnabled() const { return homeNotifications; }
+	void setHomeNotificationsEnabled(bool enabled);
+	// Closing the lid sets your status to Idle until it opens again.
+	bool isIdleOnLidCloseEnabled() const { return idleOnLidClose; }
+	void setIdleOnLidCloseEnabled(bool enabled);
+	// Keep downloaded avatars, icons and emoji on the SD card.
+	bool isImageCacheEnabled() const { return imageCache; }
+	void setImageCacheEnabled(bool enabled);
+	// Keep recent messages on the SD card so channels open instantly.
+	bool isMessageCacheEnabled() const { return messageCache; }
+	void setMessageCacheEnabled(bool enabled);
+	// Look for a newer TriCord.cia on startup.
+	bool isUpdateCheckEnabled() const { return updateCheck; }
+	void setUpdateCheckEnabled(bool enabled);
 	int getUserVolume(const std::string &userId) const;
 	void setUserVolume(const std::string &userId, int volumePercent);
 
@@ -181,6 +202,13 @@ class Config {
 	int videoVolume = 100;
 	bool debugShortcuts = true;
 	bool googleDns = false;
+	bool statusBar = true;
+	bool notifyLed = true;
+	bool homeNotifications = true;
+	bool idleOnLidClose = true;
+	bool imageCache = true;
+	bool messageCache = true;
+	bool updateCheck = true;
 	std::unordered_map<std::string, int> userVolumes;
 
 	bool customThemeEnabled;

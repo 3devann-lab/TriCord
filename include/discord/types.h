@@ -90,6 +90,7 @@ const uint64_t MANAGE_MESSAGES = 1ULL << 13;
 const uint64_t VIEW_CHANNEL = 1ULL << 10;
 const uint64_t SEND_MESSAGES = 1ULL << 11;
 const uint64_t MANAGE_CHANNELS = 1ULL << 4;
+const uint64_t CREATE_INSTANT_INVITE = 1ULL << 0;
 const uint64_t USE_APPLICATION_COMMANDS = 1ULL << 31;
 } // namespace Permissions
 
@@ -108,6 +109,43 @@ struct Member {
 	std::string globalName;
 	std::string avatar;
 	std::vector<std::string> role_ids;
+};
+
+// One row of a server's member list as Discord sends it: a group header or a member.
+struct MemberListItem {
+	bool isGroup = false;
+	// Hoisted role id, "online" or "offline".
+	std::string groupId;
+	int count = 0;
+	User user;
+	std::string nick;
+	std::vector<std::string> roles;
+	UserStatus status = UserStatus::OFFLINE;
+};
+
+struct MemberList {
+	std::string listId;
+	int memberCount = 0;
+	int onlineCount = 0;
+	std::vector<MemberListItem> items;
+	// Bumped on every change, so a viewer knows to rebuild.
+	uint32_t version = 0;
+};
+
+// What GET /invites/{code} says about an invite.
+struct InviteInfo {
+	std::string code;
+	std::string guildId;
+	std::string guildName;
+	std::string guildIcon;
+	std::string guildDescription;
+	std::string channelId;
+	std::string channelName;
+	std::string inviterName;
+	int memberCount = 0;
+	int onlineCount = 0;
+	// Group DM invites have no guild.
+	bool isGroupDm = false;
 };
 
 struct VoiceParticipant {
@@ -221,6 +259,9 @@ struct Attachment {
 	int height = 0;
 	std::string content_type;
 	bool spoiler = false;
+	// Voice messages: length and Discord's base64 amplitude samples.
+	double durationSecs = 0.0;
+	std::string waveform;
 };
 
 // One entry of the user's favorite GIFs, from the frecency settings proto.
