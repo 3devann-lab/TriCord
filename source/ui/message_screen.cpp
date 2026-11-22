@@ -20,6 +20,8 @@
 #include "ui/voice_popup.h"
 #include "ui/markdown_renderer.h"
 #include "ui/message_list_overlay.h"
+#include "ui/invite_overlay.h"
+#include "ui/member_list_overlay.h"
 #include "ui/screen_manager.h"
 #include "ui/server_list_screen.h"
 #include "utils/file_utils.h"
@@ -902,6 +904,24 @@ void MessageScreen::update() {
 				openMessageList(MessageListOverlay::Mode::PINS);
 			} else if (action == "ChannelLatest") {
 				jumpToPresent();
+			} else if (action == "ChannelMembers") {
+				pushOverlay(std::make_unique<MemberListOverlay>(guildId, channelId, channelName,
+				                                                [this](const std::string &userId) { openDmWith(userId); }));
+			} else if (action == "ChannelInvite") {
+				pushOverlay(InviteOverlay::create(channelId, channelName));
+			} else if (action == "OpenInvite") {
+				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
+					std::string code = findInviteCode(messages[selectedIndex].content);
+					if (!code.empty()) {
+						pushOverlay(InviteOverlay::preview(code, [](const std::string &targetChannel) {
+							if (targetChannel.empty()) {
+								return;
+							}
+							Discord::DiscordClient::getInstance().setSelectedChannelId(targetChannel);
+							ScreenManager::getInstance().setScreen(ScreenType::MESSAGES);
+						}));
+					}
+				}
 			} else if (action == "AttachFile") {
 				openFileBrowser();
 			} else if (action == "AttachGif") {
@@ -3771,6 +3791,9 @@ void MessageScreen::showMessageOptions() {
 	if (!msg.referencedMessageId.empty() && msg.type == 19) {
 		addOption("JumpReply", "message.menu.jump_reply");
 	}
+	if (!findInviteCode(msg.content).empty()) {
+		addOption("OpenInvite", "message.menu.open_invite");
+	}
 	if (!isMine && !msg.author.bot && !msg.author.id.empty() && !msg.isEphemeral()) {
 		const int relation = client.getRelationshipType(msg.author.id);
 		if (channelType != 1) {
@@ -4956,6 +4979,20 @@ void MessageScreen::renderUploadProgress() {
 	drawProgressBar(16.0f, y + 24.0f, 288.0f, 6.0f, fraction, 0.55f);
 }
 
+void MessageScreen::openDmWith(const std::string &userId) {
+	Discord::DiscordClient::getInstance().openDirectMessage(userId, [this, token = aliveToken](const std::string &dmId) {
+		if (!*token) {
+			return;
+		}
+		std::lock_guard<std::recursive_mutex> lock(messageMutex);
+		if (dmId.empty()) {
+			pendingToastText = TR("friends.dm_failed");
+		} else {
+			pendingDmChannel = dmId;
+		}
+	});
+}
+
 void MessageScreen::showChannelMenu() {
 	menuOptions.clear();
 	menuActions.clear();
@@ -4965,6 +5002,10 @@ void MessageScreen::showChannelMenu() {
 	};
 	addOption("ChannelSearch", "channel_menu.search");
 	addOption("ChannelPins", "channel_menu.pins");
+	addOption("ChannelMembers", "channel_menu.members");
+	if (Discord::DiscordClient::getInstance().canCreateInvite(channelId)) {
+		addOption("ChannelInvite", "channel_menu.invite");
+	}
 	addOption("ChannelLatest", "channel_menu.latest");
 	addOption("Cancel", "message.menu.cancel");
 	isMenuOpen = true;

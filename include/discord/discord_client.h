@@ -217,6 +217,14 @@ class DiscordClient {
 	                        const std::string &around = "");
 	// The last 50 messages fetched for this channel, from the SD card. Never calls back when
 	// there is nothing cached.
+	// The member list Discord last sent for a guild (the channel most recently opened there).
+	MemberList getMemberList(const std::string &guildId);
+	// Invites. Callbacks run on a network thread.
+	void fetchInvite(const std::string &code, std::function<void(bool ok, const InviteInfo &info)> cb);
+	void joinInvite(const std::string &code, std::function<void(bool ok, const std::string &error)> cb);
+	void createInvite(const std::string &channelId, int maxAgeSeconds, int maxUses,
+	                  std::function<void(bool ok, const std::string &code)> cb);
+	bool canCreateInvite(const std::string &channelId);
 	void fetchPinnedMessages(const std::string &channelId, MessageListCallback cb);
 	// Server-wide when channelId is empty; 25 results per page, from offset.
 	void searchMessages(const std::string &guildId, const std::string &channelId, const std::string &query, int offset,
@@ -317,7 +325,8 @@ class DiscordClient {
 	void authorizeLoginByPhone(const std::string &phone, const std::string &code, ErrorCallback cb);
 	void revokeToken(const std::string &token);
 
-	void sendLazyRequest(const std::string &guildId, const std::string &channelId);
+	// upTo: the furthest member list row wanted; rows come in windows of 100.
+	void sendLazyRequest(const std::string &guildId, const std::string &channelId, int upTo = 99);
 
 	void votePoll(const std::string &channelId, const std::string &messageId, const std::vector<int> &answerIds);
 
@@ -471,6 +480,9 @@ class DiscordClient {
 	User self;
 	User currentUser;
 	bool autoIdle = false;
+	std::map<std::string, MemberList> memberLists;
+	void applyMemberListUpdate(const rapidjson::Value &d);
+	MemberListItem parseMemberListItem(const rapidjson::Value &item);
 	std::vector<Guild> guilds;
 	std::vector<Channel> privateChannels;
 	std::vector<GuildFolder> folders;

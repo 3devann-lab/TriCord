@@ -237,6 +237,7 @@ class MessageScreen : public Screen {
 	// ZL/ZR: the previous or next text channel in the same server (or DM list).
 	void switchChannel(int direction);
 	void showChannelMenu();
+	void openDmWith(const std::string &userId);
 	void openMessageList(MessageListOverlay::Mode mode);
 	// A search result in another channel opens that channel and jumps once it has loaded.
 	std::string pendingJumpId;

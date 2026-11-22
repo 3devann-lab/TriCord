@@ -1180,7 +1180,7 @@ void DiscordClient::handleDispatch(const rapidjson::Document &doc) {
 	} else if (t == "PRESENCE_UPDATE") {
 		handlePresenceUpdate(d);
 	} else if (t == "GUILD_MEMBER_LIST_UPDATE") {
-		// Only read for presences: the member list itself is not shown.
+		applyMemberListUpdate(d);
 		if (d.HasMember("ops") && d["ops"].IsArray()) {
 			auto takeItem = [this](const rapidjson::Value &item) {
 				if (item.IsObject() && item.HasMember("member") && item["member"].IsObject()) {
@@ -3726,6 +3726,220 @@ void DiscordClient::searchMessages(const std::string &guildId, const std::string
 	    {{"Authorization", token}});
 }
 
+MemberListItem DiscordClient::parseMemberListItem(const rapidjson::Value &item) {
+	MemberListItem out;
+	if (!item.IsObject()) {
+		return out;
+	}
+	if (item.HasMember("group") && item["group"].IsObject()) {
+		const rapidjson::Value &g = item["group"];
+		out.isGroup = true;
+		if (g.HasMember("id") && g["id"].IsString()) {
+			out.groupId = g["id"].GetString();
+		}
+		if (g.HasMember("count") && g["count"].IsInt()) {
+			out.count = g["count"].GetInt();
+		}
+		return out;
+	}
+	if (item.HasMember("member") && item["member"].IsObject()) {
+		const rapidjson::Value &m = item["member"];
+		if (m.HasMember("user") && m["user"].IsObject()) {
+			out.user = parseUserObject(m["user"]);
+		}
+		if (m.HasMember("nick") && m["nick"].IsString()) {
+			out.nick = m["nick"].GetString();
+		}
+		if (m.HasMember("roles") && m["roles"].IsArray()) {
+			for (const auto &r : m["roles"].GetArray()) {
+				if (r.IsString()) {
+					out.roles.push_back(r.GetString());
+				}
+			}
+		}
+		if (m.HasMember("presence") && m["presence"].IsObject() && m["presence"].HasMember("status") &&
+		    m["presence"]["status"].IsString()) {
+			out.status = stringToStatus(m["presence"]["status"].GetString());
+		}
+	}
+	return out;
+}
+
+void DiscordClient::applyMemberListUpdate(const rapidjson::Value &d) {
+	if (!d.HasMember("guild_id") || !d["guild_id"].IsString()) {
+		return;
+	}
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	MemberList &list = memberLists[d["guild_id"].GetString()];
+	std::string listId = d.HasMember("id") && d["id"].IsString() ? d["id"].GetString() : "";
+	if (list.listId != listId) {
+		list = MemberList();
+		list.listId = listId;
+	}
+	if (d.HasMember("member_count") && d["member_count"].IsInt()) {
+		list.memberCount = d["member_count"].GetInt();
+	}
+	if (d.HasMember("online_count") && d["online_count"].IsInt()) {
+		list.onlineCount = d["online_count"].GetInt();
+	}
+	if (!d.HasMember("ops") || !d["ops"].IsArray()) {
+		return;
+	}
+	auto &items = list.items;
+	for (const auto &op : d["ops"].GetArray()) {
+		if (!op.IsObject() || !op.HasMember("op") || !op["op"].IsString()) {
+			continue;
+		}
+		std::string kind = op["op"].GetString();
+		int index = op.HasMember("index") && op["index"].IsInt() ? op["index"].GetInt() : -1;
+		if (kind == "SYNC" && op.HasMember("range") && op["range"].IsArray() && op["range"].Size() == 2 &&
+		    op.HasMember("items") && op["items"].IsArray()) {
+			int start = std::max(0, op["range"][0].GetInt());
+			int end = op["range"][1].GetInt();
+			int n = (int)op["items"].Size();
+			if (n > 0 && (int)items.size() < start + n) {
+				items.resize(start + n);
+			}
+			for (int i = 0; i < n; i++) {
+				items[start + i] = parseMemberListItem(op["items"][i]);
+			}
+			// Fewer rows than the window asked for: the list ends here.
+			if (start + n - 1 < end && (int)items.size() > start + n) {
+				items.resize(start + n);
+			}
+		} else if (kind == "INSERT" && index >= 0 && op.HasMember("item")) {
+			if (index > (int)items.size()) {
+				items.resize(index);
+			}
+			items.insert(items.begin() + index, parseMemberListItem(op["item"]));
+		} else if (kind == "UPDATE" && index >= 0 && op.HasMember("item")) {
+			if (index >= (int)items.size()) {
+				items.resize(index + 1);
+			}
+			items[index] = parseMemberListItem(op["item"]);
+		} else if (kind == "DELETE" && index >= 0 && index < (int)items.size()) {
+			items.erase(items.begin() + index);
+		} else if (kind == "INVALIDATE" && op.HasMember("range") && op["range"].IsArray() && op["range"].Size() == 2) {
+			int start = std::max(0, op["range"][0].GetInt());
+			int end = std::min((int)items.size() - 1, op["range"][1].GetInt());
+			for (int i = start; i <= end; i++) {
+				items[i] = MemberListItem();
+			}
+		}
+	}
+	list.version++;
+}
+
+MemberList DiscordClient::getMemberList(const std::string &guildId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	auto it = memberLists.find(guildId);
+	return it == memberLists.end() ? MemberList() : it->second;
+}
+
+void DiscordClient::fetchInvite(const std::string &code, std::function<void(bool ok, const InviteInfo &info)> cb) {
+	std::string url = "https://discord.com/api/v10/invites/" + urlEncode(code) + "?with_counts=true";
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "GET", "", Network::RequestPriority::INTERACTIVE,
+	    [this, code, cb](Network::HttpResponse &resp) {
+		    InviteInfo info;
+		    info.code = code;
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (resp.statusCode != 200 || doc.HasParseError() || !doc.IsObject()) {
+			    cb(false, info);
+			    return;
+		    }
+		    auto str = [](const rapidjson::Value &obj, const char *key) {
+			    return obj.HasMember(key) && obj[key].IsString() ? std::string(obj[key].GetString()) : std::string();
+		    };
+		    if (doc.HasMember("guild") && doc["guild"].IsObject()) {
+			    const rapidjson::Value &g = doc["guild"];
+			    info.guildId = str(g, "id");
+			    info.guildName = str(g, "name");
+			    info.guildIcon = str(g, "icon");
+			    info.guildDescription = str(g, "description");
+		    }
+		    if (doc.HasMember("channel") && doc["channel"].IsObject()) {
+			    const rapidjson::Value &c = doc["channel"];
+			    info.channelId = str(c, "id");
+			    info.channelName = str(c, "name");
+			    info.isGroupDm = c.HasMember("type") && c["type"].IsInt() && c["type"].GetInt() == 3;
+		    }
+		    if (doc.HasMember("inviter") && doc["inviter"].IsObject()) {
+			    User inviter = parseUserObject(doc["inviter"]);
+			    info.inviterName = inviter.global_name.empty() ? inviter.username : inviter.global_name;
+		    }
+		    if (doc.HasMember("approximate_member_count") && doc["approximate_member_count"].IsInt()) {
+			    info.memberCount = doc["approximate_member_count"].GetInt();
+		    }
+		    if (doc.HasMember("approximate_presence_count") && doc["approximate_presence_count"].IsInt()) {
+			    info.onlineCount = doc["approximate_presence_count"].GetInt();
+		    }
+		    cb(true, info);
+	    },
+	    {{"Authorization", token}});
+}
+
+void DiscordClient::joinInvite(const std::string &code, std::function<void(bool ok, const std::string &error)> cb) {
+	std::string url = "https://discord.com/api/v10/invites/" + urlEncode(code);
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "POST", "{}", Network::RequestPriority::INTERACTIVE,
+	    [cb](Network::HttpResponse &resp) {
+		    if (resp.statusCode == 200) {
+			    cb(true, "");
+			    return;
+		    }
+		    // Discord asks for a captcha on some joins, which this app cannot show.
+		    std::string error = resp.body.find("captcha") != std::string::npos ? "captcha" : "";
+		    if (resp.statusCode == 403 || resp.statusCode == 404) {
+			    error = error.empty() ? "invalid" : error;
+		    }
+		    Logger::log("[Invite] Join failed: %ld %s", resp.statusCode, resp.body.substr(0, 200).c_str());
+		    cb(false, error);
+	    },
+	    {{"Authorization", token}, {"Content-Type", "application/json"}});
+}
+
+void DiscordClient::createInvite(const std::string &channelId, int maxAgeSeconds, int maxUses,
+                                 std::function<void(bool ok, const std::string &code)> cb) {
+	std::string url = "https://discord.com/api/v10/channels/" + channelId + "/invites";
+	std::string body = "{\"max_age\":" + std::to_string(maxAgeSeconds) + ",\"max_uses\":" + std::to_string(maxUses) +
+	                   ",\"temporary\":false,\"unique\":false}";
+	Network::NetworkManager::getInstance().enqueue(
+	    url, "POST", body, Network::RequestPriority::INTERACTIVE,
+	    [cb](Network::HttpResponse &resp) {
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (resp.statusCode == 200 && !doc.HasParseError() && doc.IsObject() && doc.HasMember("code") &&
+		        doc["code"].IsString()) {
+			    cb(true, doc["code"].GetString());
+		    } else {
+			    cb(false, "");
+		    }
+	    },
+	    {{"Authorization", token}, {"Content-Type", "application/json"}});
+}
+
+bool DiscordClient::canCreateInvite(const std::string &channelId) {
+	std::lock_guard<std::recursive_mutex> lock(clientMutex);
+	const std::string guildId = getGuildIdFromChannel(channelId);
+	if (guildId.empty() || guildId == "DM") {
+		return false;
+	}
+	for (const auto &guild : guilds) {
+		if (guild.id != guildId) {
+			continue;
+		}
+		for (const auto &channel : guild.channels) {
+			if (channel.id == channelId) {
+				const uint64_t perms = computeChannelPermissions(guild, channel, currentUser.id, guild.myRoles);
+				return (perms & (Permissions::CREATE_INSTANT_INVITE | Permissions::ADMINISTRATOR)) != 0;
+			}
+		}
+	}
+	return false;
+}
+
 std::vector<Message> DiscordClient::parseMessages(const std::string &json) {
 	std::vector<Message> messages;
 	rapidjson::Document doc;
@@ -4950,7 +5164,7 @@ void DiscordClient::revokeToken(const std::string &token) {
 	    {{"Authorization", token}, {"Content-Type", "application/json"}});
 }
 
-void DiscordClient::sendLazyRequest(const std::string &guildId, const std::string &channelId) {
+void DiscordClient::sendLazyRequest(const std::string &guildId, const std::string &channelId, int upTo) {
 	if (guildId.empty() || channelId.empty() || guildId == "DM") {
 		return;
 	}
@@ -4981,10 +5195,17 @@ void DiscordClient::sendLazyRequest(const std::string &guildId, const std::strin
 	writer.StartObject();
 	writer.Key(channelId.c_str());
 	writer.StartArray();
-	writer.StartArray();
-	writer.Int(0);
-	writer.Int(99);
-	writer.EndArray();
+	// The first window always, plus the one holding upTo and the one after it.
+	int window = std::max(1, std::max(0, upTo) / 100);
+	for (int w : {0, window, window + 1}) {
+		if (w == window + 1 && upTo < 100) {
+			break;
+		}
+		writer.StartArray();
+		writer.Int(w * 100);
+		writer.Int(w * 100 + 99);
+		writer.EndArray();
+	}
 	writer.EndArray();
 	writer.EndObject();
 
