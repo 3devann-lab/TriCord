@@ -20,7 +20,7 @@ namespace Updater {
 
 namespace {
 
-const char *DEFAULT_REPO = "3devann-lab/TriCord";
+const char *DEFAULT_REPO = "3devann-lab/TriCordX";
 const char *BRANCH = "main";
 
 std::mutex mutex;
