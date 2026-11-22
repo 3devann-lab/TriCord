@@ -62,8 +62,7 @@ The account information is stored in `/3ds/TriCord/accounts`. **Although this fi
 ## Building from Source
 
 ### Prerequisites
-- [devkitPro](https://devkitpro.org/wiki/Getting_Started) with devkitARM
-
+- [devkitPro](https://devkitpro.org/wiki/Getting_Started) with devkitARM and `3ds-libjpeg-turbo`
 - `makerom` and `bannertool` on your `PATH` for the CIA (`scripts/install_cia_tools.sh` installs both)
 
 ### Build
