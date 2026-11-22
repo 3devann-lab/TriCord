@@ -1,5 +1,7 @@
 #include "ui/loading_view.h"
+#include "core/config.h"
 #include "core/i18n.h"
+#include "network/dns.h"
 #include "discord/discord_client.h"
 #include "ui/image_manager.h"
 #include "ui/screen_manager.h"
@@ -15,11 +17,17 @@ namespace LoadingView {
 namespace {
 
 constexpr const char *ICON = "romfs:/tricord-icon-128.png";
-constexpr int TIP_COUNT = 8;
+constexpr int TIP_COUNT = 9;
 constexpr double TIP_SECONDS = 5.0;
 
 float smoothed = 0.0f;
 u64 lastFrame = 0;
+
+constexpr u64 STALL_MS = 20000;
+constexpr int HOLD_FRAMES = 45;
+u64 stalledSince = 0;
+bool autoSwitched = false;
+int heldFrames = 0;
 
 double seconds() { return osGetTime() / 1000.0; }
 
@@ -86,6 +94,44 @@ void drawRing(float cx, float cy, float radius, float thickness, u32 color) {
 }
 
 } // namespace
+
+void update() {
+	using S = Discord::ConnectionState;
+	const S state = Discord::DiscordClient::getInstance().getState();
+	// Stuck before the gateway answers: what a blocked network looks like.
+	const bool stalled = state == S::CONNECTING || state == S::CONNECTED_WS || state == S::RECONNECTING ||
+	                     state == S::DISCONNECTED_ERROR;
+	const u64 now = osGetTime();
+	if (!stalled) {
+		stalledSince = 0;
+	} else if (!stalledSince) {
+		stalledSince = now;
+	}
+
+	const u32 held = hidKeysHeld();
+	heldFrames = ((held & KEY_L) && (held & KEY_R)) ? heldFrames + 1 : 0;
+
+	bool turnOn = false;
+	if (heldFrames == HOLD_FRAMES) {
+		if (Network::Dns::isEnabled()) {
+			Network::Dns::setEnabled(false);
+			Config::getInstance().setGoogleDnsEnabled(false);
+			ScreenManager::getInstance().showToast(TR("loading.dns_off"));
+			stalledSince = now;
+			autoSwitched = true;
+		} else {
+			turnOn = true;
+		}
+	} else if (!autoSwitched && !Network::Dns::isEnabled() && stalledSince && now - stalledSince > STALL_MS) {
+		autoSwitched = true;
+		turnOn = true;
+	}
+	if (turnOn) {
+		Network::Dns::setEnabled(true);
+		Config::getInstance().setGoogleDnsEnabled(true);
+		ScreenManager::getInstance().showToast(TR("loading.dns_on"));
+	}
+}
 
 void drawTop() {
 	const u64 now = osGetTime();
@@ -154,6 +200,19 @@ void drawTop() {
 	                 getTruncatedText(status, 380.0f, 0.45f, 0.45f), 400.0f);
 	drawCenteredText(210.0f, 0.6f, 0.38f, 0.38f, ScreenManager::colorTextMuted(),
 	                 Core::I18n::format(TR("loading.step"), std::to_string(step), "4"), 400.0f);
+
+	if (Network::Dns::isEnabled()) {
+		const std::string label = TR("loading.dns_badge");
+		const float w = measureText(label, 0.38f, 0.38f) + 14.0f;
+		drawRoundedRect(400.0f - w - 6.0f, 6.0f, 0.7f, w, 16.0f, 8.0f, withAlpha(accent, 0.85f));
+		drawText(400.0f - w + 1.0f, 7.5f, 0.71f, 0.38f, 0.38f, ScreenManager::colorWhite(), label);
+	} else if (stalledSince && osGetTime() - stalledSince > 6000) {
+		drawCenteredText(225.0f, 0.6f, 0.36f, 0.36f, ScreenManager::colorTextMuted(), TR("loading.dns_hint"), 400.0f);
+	}
+	if (heldFrames > 0 && heldFrames < HOLD_FRAMES) {
+		const float fraction = (float)heldFrames / HOLD_FRAMES;
+		drawRoundedRect(150.0f, 4.0f, 0.7f, 100.0f * fraction, 4.0f, 2.0f, accent);
+	}
 }
 
 void drawBottom() {

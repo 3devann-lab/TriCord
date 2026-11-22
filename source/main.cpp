@@ -2,6 +2,7 @@
 #include "discord/discord_client.h"
 #include "discord/voice_client.h"
 #include "log.h"
+#include "network/dns.h"
 #include "network/http_client.h"
 #include "network/network_manager.h"
 #include "ui/image_manager.h"
@@ -103,6 +104,7 @@ int main(int argc, char **argv) {
 	}
 
 	Config::getInstance().load();
+	Network::Dns::setEnabled(Config::getInstance().isGoogleDnsEnabled());
 	if (Utils::System::isNew3DS()) {
 		Network::NetworkManager::getInstance().init(3, 2);
 	} else {

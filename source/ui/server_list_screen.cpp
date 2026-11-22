@@ -7,6 +7,7 @@
 #include "log.h"
 #include "ui/image_manager.h"
 #include "ui/loading_view.h"
+#include "ui/presence_ui.h"
 #include "ui/voice_controls.h"
 #include "ui/voice_popup.h"
 #include "utils/message_utils.h"
@@ -1026,6 +1027,7 @@ void ServerListScreen::update() {
 			rebuildList();
 			refreshChannels();
 		} else if (client.getState() != Discord::ConnectionState::READY) {
+			LoadingView::update();
 			animTimer += 1.0f / 60.0f;
 			if (animTimer >= 1.5f) {
 				animTimer = 0.0f;
@@ -1613,6 +1615,17 @@ void ServerListScreen::drawChannelList(float x, float y, float alpha) {
 				C2D_Image img = {avatarTex, &sub};
 				C2D_DrawImageAt(img, avatarX, dmY + (dmHeight - avatarSize) / 2.0f, 0.5f, nullptr,
 				                avatarSize / avatarTex->width, avatarSize / avatarTex->height);
+				if (ch.type == 1 && !ch.recipients.empty()) {
+					const Discord::Presence presence =
+					    Discord::DiscordClient::getInstance().getPresence(ch.recipients[0].id);
+					if (presence.status != Discord::UserStatus::OFFLINE) {
+						drawStatusBadge(avatarX + avatarSize - 4.0f, dmY + (dmHeight + avatarSize) / 2.0f - 4.0f,
+						                10.0f, presence,
+						                isSelected ? ScreenManager::colorBackgroundLight()
+						                           : ScreenManager::colorBackground(),
+						                0.52f);
+					}
+				}
 			} else {
 				C3D_Tex *tex = UI::ImageManager::getInstance().getLocalImage("romfs:/discord-icons/chat.png");
 				if (tex) {
@@ -1628,8 +1641,17 @@ void ServerListScreen::drawChannelList(float x, float y, float alpha) {
 
 			float nameX = avatarX + avatarSize + 8.0f;
 			float nameLimit = 400.0f - nameX - 10.0f;
-			drawRichText(nameX, dmY + dmHeight / 2.0f - 8.0f, 0.5f, 0.55f, 0.55f, dmColor,
+			std::string activityLine;
+			if (ch.type == 1 && !ch.recipients.empty()) {
+				activityLine = presenceLine(Discord::DiscordClient::getInstance().getPresence(ch.recipients[0].id));
+			}
+			const float nameY = activityLine.empty() ? dmY + dmHeight / 2.0f - 8.0f : dmY + dmHeight / 2.0f - 13.0f;
+			drawRichText(nameX, nameY, 0.5f, 0.55f, 0.55f, dmColor,
 			             getTruncatedRichText(MessageUtils::getChannelDisplayName(ch), nameLimit, 0.55f, 0.55f));
+			if (!activityLine.empty()) {
+				drawText(nameX, nameY + 15.0f, 0.5f, 0.36f, 0.36f, ScreenManager::colorTextMuted(),
+				         getTruncatedText(activityLine, nameLimit, 0.36f, 0.36f));
+			}
 
 			rendered++;
 			continue;

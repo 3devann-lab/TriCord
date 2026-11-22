@@ -3,6 +3,7 @@
 #include "discord/avatar_cache.h"
 #include "discord/discord_client.h"
 #include "ui/overlay.h"
+#include "ui/presence_ui.h"
 #include "utils/redraw.h"
 #include "utils/utf8_utils.h"
 #include <algorithm>
@@ -87,6 +88,13 @@ std::vector<Discord::Relationship> FriendsScreen::visible() const {
 		// Requests waiting on you come first.
 		if (a.type != b.type) {
 			return a.type == Discord::RelationshipType::INCOMING;
+		}
+		// Friends who are on come before those who are not.
+		auto &client = Discord::DiscordClient::getInstance();
+		const bool aOn = client.getPresence(a.id).status != Discord::UserStatus::OFFLINE;
+		const bool bOn = client.getPresence(b.id).status != Discord::UserStatus::OFFLINE;
+		if (aOn != bOn) {
+			return aOn;
 		}
 		return lower(displayName(a)) < lower(displayName(b));
 	});
@@ -308,11 +316,20 @@ void FriendsScreen::renderTop(C3D_RenderTarget *target) {
 			         Utils::Utf8::getFirstChar(displayName(rel)));
 		}
 
+		const Discord::Presence presence = Discord::DiscordClient::getInstance().getPresence(rel.id);
+		if (rel.type == Discord::RelationshipType::FRIEND) {
+			drawStatusBadge(18.0f + avatar - 3.0f, y + 6.0f + avatar - 3.0f, 10.0f, presence,
+			                isSelected ? ScreenManager::colorBackgroundLight() : ScreenManager::colorBackgroundDark(),
+			                0.56f);
+		}
+
 		const u32 nameColor = isSelected ? ScreenManager::colorText() : ScreenManager::colorTextMuted();
 		drawText(56.0f, y + 5.0f, 0.55f, 0.48f, 0.48f, nameColor,
 		         getTruncatedText(displayName(rel), 230.0f, 0.48f, 0.48f));
-		drawText(56.0f, y + 21.0f, 0.55f, 0.38f, 0.38f, ScreenManager::colorTextMuted(),
-		         getTruncatedText("@" + rel.user.username, 230.0f, 0.38f, 0.38f));
+		const std::string line = presenceLine(presence);
+		drawText(56.0f, y + 21.0f, 0.55f, 0.38f, 0.38f,
+		         line.empty() ? ScreenManager::colorTextMuted() : ScreenManager::colorText(),
+		         getTruncatedText(line.empty() ? "@" + rel.user.username : line, 230.0f, 0.38f, 0.38f));
 
 		std::string badge;
 		if (rel.type == Discord::RelationshipType::INCOMING) {
@@ -374,6 +391,21 @@ void FriendsScreen::renderBottom(C3D_RenderTarget *target) {
 		drawText(10.0f, 80.0f, 0.5f, 0.4f, 0.4f, ScreenManager::colorTextMuted(),
 		         getTruncatedText("@" + rel.user.username, 300.0f, 0.4f, 0.4f));
 		if (rel.type == Discord::RelationshipType::FRIEND) {
+			const Discord::Presence presence = Discord::DiscordClient::getInstance().getPresence(rel.id);
+			drawStatusBadge(16.0f, 103.0f, 10.0f, presence, ScreenManager::colorBackgroundDark(), 0.5f);
+			drawText(26.0f, 96.0f, 0.5f, 0.42f, 0.42f, ScreenManager::colorText(), statusLabel(presence));
+			float py = 112.0f;
+			if (!presence.activity.empty()) {
+				drawText(10.0f, py, 0.5f, 0.4f, 0.4f, ScreenManager::colorAccent(),
+				         getTruncatedText(presence.activity, 300.0f, 0.4f, 0.4f));
+				py += 14.0f;
+			}
+			if (!presence.customStatus.empty()) {
+				drawText(10.0f, py, 0.5f, 0.4f, 0.4f, ScreenManager::colorTextMuted(),
+				         getTruncatedText(presence.customStatus, 300.0f, 0.4f, 0.4f));
+			}
+		}
+		if (rel.type == Discord::RelationshipType::FRIEND) {
 			actions = ": " + TR("friends.message") + "  : " + TR("friends.remove");
 		} else if (rel.type == Discord::RelationshipType::INCOMING) {
 			actions = ": " + TR("friends.accept") + "  : " + TR("friends.decline");
@@ -383,8 +415,8 @@ void FriendsScreen::renderBottom(C3D_RenderTarget *target) {
 			actions = ": " + TR("friends.unblock");
 		}
 	}
-	drawText(10.0f, 150.0f, 0.5f, 0.42f, 0.42f, ScreenManager::colorText(), actions);
-	drawText(10.0f, 168.0f, 0.5f, 0.42f, 0.42f, ScreenManager::colorText(),
+	drawText(10.0f, 160.0f, 0.5f, 0.42f, 0.42f, ScreenManager::colorText(), actions);
+	drawText(10.0f, 178.0f, 0.5f, 0.42f, 0.42f, ScreenManager::colorText(),
 	         ": " + TR("friends.add") + "  L/R: " + TR("friends.switch_tab"));
 	drawKeyHints("\uE079\uE07A: " + TR("common.navigate") + "  \uE001: " + TR("common.back"));
 }

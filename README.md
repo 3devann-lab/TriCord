@@ -34,6 +34,8 @@ This software is provided **"as is"**, and you use it at your own risk. The use 
 - **Friends**: add by username, accept or decline requests, remove friends, unblock, and message them
 - **Edit channels** you have Manage Channels on (name, topic, slowmode, age restriction), and an **edit mode** to reorder a server's channels
 - Jump to the message a reply answers
+- **Online status and activity** (Playing, Listening to Spotify, custom status...) in Friends, DMs, profiles and on chat avatars
+- **Google DNS fallback** for networks that block Discord: turns on after 20 seconds without a connection, by holding L+R on the loading screen, or in Settings > Advanced
 - 28 built-in themes, previewed live in Settings, plus custom themes from the SD card
 - Multi-account support
 - Server, channel, and forum thread navigation
@@ -138,7 +140,8 @@ Every push builds the CIA and 3DSX in the `devkitpro/devkitarm` container (`.git
 - A: Open folder / choose file | B: Up a folder | Y: Show all files / media only | X: Close
 
 **General**
-- Start: Exit the app | Select: Open the hamburger menu | L+R: Toggle Debug Log | R+L: Toggle Stats Overlay
+- Start: Exit the app | Select: Open the hamburger menu | L+R: Toggle Debug Log | R+L: Toggle Stats Overlay (both can be turned off in Settings > Advanced)
+- Loading screen: hold L+R to connect through Google DNS
 
 Config: `sdmc:/3ds/TriCord/config.json`
 

@@ -225,6 +225,9 @@ class DiscordClient {
 	                SendMessageCallback cb);
 	// The largest attachment Discord accepts from this account.
 	long long getUploadLimitBytes();
+	// Online status and activity, from READY and presence updates. OFFLINE when unknown.
+	Presence getPresence(const std::string &userId);
+
 	// Slash commands usable in a channel: the guild's (or DM's) bots plus user-installed apps.
 	void fetchApplicationCommands(const std::string &channelId, CommandsCallback cb);
 	void sendApplicationCommand(const std::string &channelId, const ApplicationCommand &command,
@@ -549,6 +552,8 @@ class DiscordClient {
 	std::map<std::string, std::vector<Message>> ephemeralMessages;
 	std::map<std::string, UserProfile> profileCache;
 	std::vector<Relationship> relationships;
+	std::map<std::string, Presence> presences;
+	void storePresence(const rapidjson::Value &entry);
 	bool relationshipsLoaded = false;
 	void applyChannelPositions(const std::string &guildId, const std::vector<ChannelPosition> &positions);
 };

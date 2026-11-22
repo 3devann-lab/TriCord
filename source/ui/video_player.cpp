@@ -25,9 +25,6 @@ constexpr float BAR_Y = 150.0f;
 constexpr float BAR_W = 288.0f;
 constexpr float BAR_H = 8.0f;
 
-const int mortonTable[] = {0,  1,  4,  5,  16, 17, 20, 21, 2,  3,  6,  7,  18, 19, 22, 23, 8,  9,  12, 13, 24, 25,
-                           28, 29, 10, 11, 14, 15, 26, 27, 30, 31, 32, 33, 36, 37, 48, 49, 52, 53, 34, 35, 38, 39,
-                           50, 51, 54, 55, 40, 41, 44, 45, 56, 57, 60, 61, 42, 43, 46, 47, 58, 59, 62, 63};
 
 // The last remote video, so replaying it skips the download.
 std::mutex cacheMutex;
@@ -190,46 +187,17 @@ void VideoPlayer::startPlayback(double at) {
 	decoder.setVolume(volume);
 }
 
-void VideoPlayer::uploadFrame(const uint16_t *pixels, int width, int height, int rotation) {
+void VideoPlayer::uploadFrame(const uint16_t *tiled, int width, int height) {
 	if (!tex) {
 		return;
 	}
-	const bool sideways = rotation == 90 || rotation == 270;
-	const int dispW = std::min(sideways ? height : width, TEX_W);
-	const int dispH = std::min(sideways ? width : height, TEX_H);
-	u16 *dst = (u16 *)tex->data;
-	const int tilesPerRow = TEX_W >> 3;
-
-	for (int dy = 0; dy < dispH; dy++) {
-		const int *morton = &mortonTable[(dy & 7) << 3];
-		u16 *tileRow = dst + ((size_t)(dy >> 3) * tilesPerRow << 6);
-		if (rotation == 0) {
-			const uint16_t *row = pixels + (size_t)dy * width;
-			for (int dx = 0; dx < dispW; dx++) {
-				tileRow[((dx >> 3) << 6) + morton[dx & 7]] = row[dx];
-			}
-			continue;
-		}
-		for (int dx = 0; dx < dispW; dx++) {
-			int sx = dx;
-			int sy = dy;
-			if (rotation == 90) {
-				sx = dy;
-				sy = height - 1 - dx;
-			} else if (rotation == 180) {
-				sx = width - 1 - dx;
-				sy = height - 1 - dy;
-			} else if (rotation == 270) {
-				sx = width - 1 - dy;
-				sy = dx;
-			}
-			tileRow[((dx >> 3) << 6) + morton[dx & 7]] = pixels[(size_t)sy * width + sx];
-		}
-	}
+	// The decoder already laid the frame out for the GPU; this is a plain copy.
+	memcpy(tex->data, tiled, (size_t)TEX_W * TEX_H * sizeof(uint16_t));
 	GSPGPU_FlushDataCache(tex->data, tex->size);
-	frameW = dispW;
-	frameH = dispH;
+	frameW = std::min(width, TEX_W);
+	frameH = std::min(height, TEX_H);
 	haveFrame = true;
+	redraw = true;
 }
 
 void VideoPlayer::showOsd(const std::string &text) {
@@ -310,9 +278,19 @@ void VideoPlayer::update(u32 kDown, u32 kHeld) {
 	}
 
 	const Media::VideoInfo info = decoder.info();
-	decoder.consumeFrame([this, &info](const uint16_t *pixels, int width, int height) {
-		uploadFrame(pixels, width, height, info.rotation);
-	});
+	decoder.consumeFrame([this](const uint16_t *tiled, int width, int height) { uploadFrame(tiled, width, height); });
+
+	if (!hdHintShown && info.hasVideo && !info.hardware) {
+		hdHintShown = true;
+		const int64_t pixels = (int64_t)info.width * info.height;
+		if (Media::VideoDecoder::hardwareAvailable() && info.videoCodec == "h264" && pixels > 640LL * 480) {
+			showOsd(TR("video.hint_try_hw"));
+			osdTimer = 240;
+		} else if (!Media::VideoDecoder::hardwareAvailable() && pixels > 640LL * 360) {
+			showOsd(TR("video.hint_hd_slow"));
+			osdTimer = 240;
+		}
+	}
 
 	if (kDown & KEY_A) {
 		if (state == Media::PlayerState::ENDED) {
@@ -381,7 +359,16 @@ void VideoPlayer::update(u32 kDown, u32 kHeld) {
 	}
 }
 
+bool VideoPlayer::isAnimating() const {
+	if (stage != Stage::PLAYING || redraw || osdTimer > 0 || !haveFrame) {
+		return true;
+	}
+	// Enough to keep the clock on the bottom screen ticking.
+	return osGetTime() - lastClockRedraw > 500;
+}
+
 void VideoPlayer::renderTop() {
+	redraw = false;
 	C2D_DrawRectSolid(0, 0, 0.1f, 400, 240, C2D_Color32(0, 0, 0, 255));
 
 	if (stage == Stage::PLAYING && haveFrame && tex && frameW > 0 && frameH > 0) {
@@ -422,6 +409,7 @@ void VideoPlayer::renderTop() {
 }
 
 void VideoPlayer::renderBottom() {
+	lastClockRedraw = osGetTime();
 	C2D_DrawRectSolid(0, 0, 0.1f, 320, 240, ScreenManager::colorBackgroundDark());
 	const std::string title = source.title.empty() ? Utils::File::baseName(path) : source.title;
 	drawText(10.0f, 8.0f, 0.5f, 0.5f, 0.5f, ScreenManager::colorText(), getTruncatedText(title, 300.0f, 0.5f, 0.5f));

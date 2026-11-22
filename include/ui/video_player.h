@@ -36,7 +36,8 @@ class VideoPlayer : public Overlay {
 	void update(u32 kDown, u32 kHeld) override;
 	void renderTop() override;
 	void renderBottom() override;
-	bool isAnimating() const override { return true; }
+	// Redraws only when a frame or the on-screen display changes, which leaves the decoder more CPU.
+	bool isAnimating() const override;
 
   private:
 	enum class Stage { DOWNLOADING, PLAYING, FAILED };
@@ -66,6 +67,9 @@ class VideoPlayer : public Overlay {
 	int frameW = 0;
 	int frameH = 0;
 	bool haveFrame = false;
+	bool redraw = true;
+	bool hdHintShown = false;
+	u64 lastClockRedraw = 0;
 
 	Utils::WorkerThread saveThread;
 	std::shared_ptr<std::atomic<int>> saveState;
@@ -73,7 +77,7 @@ class VideoPlayer : public Overlay {
 
 	void startDownload();
 	void startPlayback(double at);
-	void uploadFrame(const uint16_t *pixels, int width, int height, int rotation);
+	void uploadFrame(const uint16_t *tiled, int width, int height);
 	void seekBy(double seconds);
 	void showOsd(const std::string &text);
 	void save();

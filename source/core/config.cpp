@@ -270,6 +270,12 @@ void Config::loadSettings() {
 			if (doc.HasMember("video_volume") && doc["video_volume"].IsInt()) {
 				videoVolume = std::clamp(doc["video_volume"].GetInt(), 0, 200);
 			}
+			if (doc.HasMember("debug_shortcuts") && doc["debug_shortcuts"].IsBool()) {
+				debugShortcuts = doc["debug_shortcuts"].GetBool();
+			}
+			if (doc.HasMember("google_dns") && doc["google_dns"].IsBool()) {
+				googleDns = doc["google_dns"].GetBool();
+			}
 			if (doc.HasMember("user_volumes") && doc["user_volumes"].IsObject()) {
 				userVolumes.clear();
 				for (auto it = doc["user_volumes"].MemberBegin(); it != doc["user_volumes"].MemberEnd(); ++it) {
@@ -326,6 +332,10 @@ void Config::saveSettings() {
 	writer.Bool(hardwareVideo);
 	writer.Key("video_volume");
 	writer.Int(videoVolume);
+	writer.Key("debug_shortcuts");
+	writer.Bool(debugShortcuts);
+	writer.Key("google_dns");
+	writer.Bool(googleDns);
 	writer.Key("user_volumes");
 	writer.StartObject();
 	for (const auto &pair : userVolumes) {
@@ -359,6 +369,18 @@ void Config::setMicVolume(int volumePercent) {
 void Config::setHardwareVideoEnabled(bool enabled) {
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	hardwareVideo = enabled;
+	saveSettings();
+}
+
+void Config::setDebugShortcutsEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	debugShortcuts = enabled;
+	saveSettings();
+}
+
+void Config::setGoogleDnsEnabled(bool enabled) {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	googleDns = enabled;
 	saveSettings();
 }
 

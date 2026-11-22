@@ -21,6 +21,8 @@ class WorkerThread {
 	// preferExtraCore is New 3DS only; the Old 3DS second core belongs to the
 	// system services this app leans on.
 	void start(std::function<void()> fn, int priorityDelta, size_t stackSize = 32 * 1024, bool preferExtraCore = false);
+	// On a given core (-2 for the default one), falling back to the default core if that fails.
+	void startOnCore(std::function<void()> fn, int priorityDelta, size_t stackSize, int core);
 
 	bool joinable() const { return thread != nullptr; }
 	void join();
