@@ -220,6 +220,7 @@ class MessageScreen : public Screen {
 	               const std::string &fileName, bool loop);
 	bool playSelectedVideo(bool includeGifs);
 	void saveSelectedAttachments();
+	void viewSelectedImages();
 	void renderUploadProgress();
 	void renderAttachButton(float x, float y);
 	float attachButtonX(bool scrollVisible) const;

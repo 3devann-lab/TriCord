@@ -10,6 +10,7 @@
 #include "ui/emoji_manager.h"
 #include "ui/file_browser.h"
 #include "ui/gif_picker.h"
+#include "ui/image_viewer.h"
 #include "ui/image_manager.h"
 #include "ui/upload_confirm.h"
 #include "ui/video_player.h"
@@ -852,6 +853,8 @@ void MessageScreen::update() {
 				playSelectedVideo(true);
 			} else if (action == "Save") {
 				saveSelectedAttachments();
+			} else if (action == "ViewImage") {
+				viewSelectedImages();
 			} else if (action == "ToggleSpoiler") {
 				if (selectedIndex >= 0 && selectedIndex < (int)messages.size()) {
 					const std::string &id = messages[selectedIndex].id;
@@ -3616,6 +3619,14 @@ void MessageScreen::showMessageOptions() {
 			saveable = true;
 		}
 	}
+	const bool hasImage =
+	    std::any_of(msg.attachments.begin(), msg.attachments.end(),
+	                [](const Discord::Attachment &attach) { return isImageAttachment(attach); }) ||
+	    std::any_of(msg.embeds.begin(), msg.embeds.end(),
+	                [](const Discord::Embed &embed) { return !embed.image_url.empty(); });
+	if (hasImage) {
+		addOption("ViewImage", "message.menu.view_image");
+	}
 	if (playable) {
 		addOption("Play", "message.menu.play_video");
 	}
@@ -4940,6 +4951,30 @@ void MessageScreen::saveSelectedAttachments() {
 			        success ? Core::I18n::format(TR("save.done"), target) : TR("save.failed");
 		    },
 		    {}, Network::RequestPriority::BACKGROUND);
+	}
+}
+
+void MessageScreen::viewSelectedImages() {
+	if (selectedIndex < 0 || selectedIndex >= (int)messages.size()) {
+		return;
+	}
+	const Discord::Message &msg = messages[selectedIndex];
+	std::vector<ImageViewer::Image> images;
+	for (const auto &attach : msg.attachments) {
+		if (isImageAttachment(attach)) {
+			images.push_back({attach.url.empty() ? attach.proxy_url : attach.url, attach.filename, attach.width,
+			                  attach.height});
+		}
+	}
+	for (const auto &embed : msg.embeds) {
+		if (!embed.image_url.empty()) {
+			const std::string title = embed.title.empty() ? embed.provider_name : embed.title;
+			images.push_back({embed.image_proxy_url.empty() ? embed.image_url : embed.image_proxy_url, title,
+			                  embed.image_width, embed.image_height});
+		}
+	}
+	if (!images.empty()) {
+		pushOverlay(std::make_unique<ImageViewer>(std::move(images), 0));
 	}
 }
 

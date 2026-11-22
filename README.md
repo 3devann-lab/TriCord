@@ -24,6 +24,12 @@ This software is provided **"as is"**, and you use it at your own risk. The use 
 ## Features
 - QR code and email/password authentication
 - Text messaging with emoji, attachments, embeds, reactions, and replies
+- **Send photos, videos and files straight from the SD card**, with a preview, caption and spoiler toggle
+- **Send your favorite GIFs** (the ones you starred in Discord), picked from animated previews
+- **Watch videos** (MP4/MOV/WebM) from attachments, GIF embeds, links, or the SD card, with sound and seeking. H.264 uses the New 3DS hardware decoder when it can
+- **Take a photo** with the inner or outer camera and send it
+- Full-screen image viewer with zoom and pan
+- Save attachments to the SD card (`sdmc:/3ds/TriCord/downloads`)
 - Multi-account support
 - Server, channel, and forum thread navigation
 - Customizable [themes](THEME_FORMAT.md) and internationalization (EN/JA)
@@ -33,7 +39,7 @@ TriCord supports custom themes. You can create your own theme by following the *
 Check out the [TriCord-Themes](https://github.com/2b-zipper/TriCord-Themes) repository for sample themes.
 
 ## Installation
-1. Download the latest release (CIA or 3DSX)
+1. Download the latest release (CIA or 3DSX). The newest build from GitHub Actions is always at the root of this repository as [`TriCord.cia`](TriCord.cia)
 2. Install via FBI (CIA) or place in `/3ds/` (3DSX)
 3. Launch and log in with QR code or email/password
 
@@ -58,15 +64,23 @@ The account information is stored in `/3ds/TriCord/accounts`. **Although this fi
 ### Prerequisites
 - [devkitPro](https://devkitpro.org/wiki/Getting_Started) with devkitARM
 
+- `makerom` and `bannertool` on your `PATH` for the CIA (`scripts/install_cia_tools.sh` installs both)
+
 ### Build
 
 ```bash
 git clone https://github.com/2b-zipper/TriCord.git
 cd TriCord
+scripts/build_ffmpeg.sh   # optional: video playback; downloads and cross-compiles a trimmed FFmpeg
 make -j$(nproc)
 ```
 
-Output: `TriCord.3dsx`, `TriCord.cia`, `TriCord.elf`
+Output: `TriCord.3dsx`, `TriCord.cia`, `TriCord.elf`. Use `make 3dsx` to skip the CIA when you don't have `makerom` and `bannertool`.
+
+Without `scripts/build_ffmpeg.sh`, TriCord still builds; the video player then says playback isn't included.
+
+### GitHub Actions
+Every push builds the CIA and 3DSX in the `devkitpro/devkitarm` container (`.github/workflows/build.yml`), uploads both as a build artifact, and commits `TriCord.cia` to the root of the branch that was pushed.
 
 ## Libraries
 
@@ -88,6 +102,10 @@ Output: `TriCord.3dsx`, `TriCord.cia`, `TriCord.elf`
 - [libopus](https://opus-codec.org/) (BSD 3-Clause License)
 - [ThorVG](https://github.com/thorvg/thorvg) (MIT License)
 
+### Built at Compile Time
+- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later), by `scripts/build_ffmpeg.sh`
+- [libjpeg-turbo](https://libjpeg-turbo.org/) (BSD-style / IJG License), via devkitPro pacman
+
 ### Additional Resources
 - CA bundle: [cacert-2025-12-02.pem](https://curl.se/docs/caextract.html) (Mozilla's CA certificate bundle)
 - [Twemoji](https://github.com/jdecked/twemoji) (CC-BY 4.0 / MIT License)
@@ -99,6 +117,15 @@ Output: `TriCord.3dsx`, `TriCord.cia`, `TriCord.elf`
 
 **Message View**
 - D-Pad: Scroll | B: Back | X: Open Menu | Y: Text input
+- R (or the + button): Attach a photo/video from the SD card, a favorite GIF, or a camera photo
+- A on a video: Play it | X menu: View Image, Play Video, Save to SD Card
+
+**Video Player**
+- A: Play/Pause | Left/Right: ±5s | L/R: ±30s | Up/Down: Volume | Touch the bar: Seek
+- X: Switch hardware/software decoding (New 3DS, H.264) | Y: Save to SD card | B: Close
+
+**File Browser**
+- A: Open folder / choose file | B: Up a folder | Y: Show all files / media only | X: Close
 
 **General**
 - Start: Exit the app | Select: Open the hamburger menu | L+R: Toggle Debug Log | R+L: Toggle Stats Overlay
