@@ -55,7 +55,10 @@ jobs:
         run: scripts/build_ffmpeg.sh
 
       - name: Build TriCord
-        run: make -j"$(nproc)"
+        run: |
+          # The in-app updater compares this with the newest TriCord.cia on main.
+          printf '{"sha":"%s","time":%s,"repo":"%s"}\n' "$GITHUB_SHA" "$(date +%s)" "$GITHUB_REPOSITORY" > romfs/build_info.json
+          make -j"$(nproc)"
 
       - name: Upload build
         uses: actions/upload-artifact@v4

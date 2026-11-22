@@ -18,6 +18,8 @@
 #include "ui/settings_screen.h"
 #include "ui/text_measure_cache.h"
 #include "ui/theme_manager_screen.h"
+#include "ui/updater_screen.h"
+#include "core/updater.h"
 #include "utils/redraw.h"
 #include "utils/utf8_utils.h"
 #include <algorithm>
@@ -347,6 +349,9 @@ void ScreenManager::setScreen(ScreenType type) {
 	case ScreenType::FRIENDS:
 		currentScreen = std::make_unique<FriendsScreen>();
 		break;
+	case ScreenType::UPDATER:
+		currentScreen = std::make_unique<UpdaterScreen>();
+		break;
 	}
 
 	if (currentScreen) {
@@ -458,6 +463,21 @@ void ScreenManager::update() {
 		Logger::log("Debug overlay toggled: %s", debugOverlayEnabled ? "ON" : "OFF");
 	} else if (!connecting && (kHeld & KEY_R) && (kDown & KEY_L)) {
 		toggleStatsOverlay();
+	}
+
+	// Once connected, look for a newer build in the background and mention it once.
+	if (!connecting && Config::getInstance().isUpdateCheckEnabled()) {
+		static bool checked = false;
+		static bool announced = false;
+		if (!checked) {
+			checked = true;
+			Core::Updater::checkAsync();
+		} else if (!announced && Core::Updater::status().state == Core::Updater::State::AVAILABLE) {
+			announced = true;
+			if (currentType != ScreenType::UPDATER) {
+				showToast(TR("updater.toast"));
+			}
+		}
 	}
 
 	if (toastTimer > 0) {

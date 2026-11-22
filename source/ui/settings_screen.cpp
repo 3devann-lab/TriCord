@@ -3,6 +3,7 @@
 #include "network/dns.h"
 #include "core/system_status.h"
 #include "network/media_cache.h"
+#include "core/updater.h"
 #include "utils/file_utils.h"
 #include "utils/redraw.h"
 #include "core/config.h"
@@ -302,6 +303,15 @@ void SettingsScreen::onEnter() {
 		ScreenManager::getInstance().showToast(TR("settings.cache_cleared"));
 	};
 	allItems.push_back(clearCache);
+
+	allItems.push_back(makeToggle("update_check", Config::getInstance().isUpdateCheckEnabled(),
+	                              [](bool on) { Config::getInstance().setUpdateCheckEnabled(on); }));
+	SettingItem updates;
+	updates.label = TR("settings.check_updates");
+	updates.description = Core::I18n::format(TR("settings.desc.check_updates"), Core::Updater::repository());
+	updates.type = SettingItemType::ACTION;
+	updates.action = []() { ScreenManager::getInstance().pushScreen(ScreenType::UPDATER); };
+	allItems.push_back(updates);
 
 	// DEVELOPER
 	SettingItem devSection;

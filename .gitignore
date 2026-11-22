@@ -12,3 +12,6 @@ compile_commands.json
 
 # Built by scripts/build_ffmpeg.sh
 library/ffmpeg/
+
+# Written by CI for the in-app updater
+romfs/build_info.json
