@@ -439,6 +439,7 @@ static const int MENU_OPEN_CHAT = INT_MIN + 4;
 static const int MENU_OPEN_THREADS = INT_MIN + 5;
 static const int MENU_EDIT_CHANNEL = INT_MIN + 6;
 static const int MENU_EDIT_MODE = INT_MIN + 7;
+static const int MENU_ORGANIZE = INT_MIN + 8;
 
 static bool opensSubmenu(int tw) { return tw == MENU_OPEN_DURATION || tw == MENU_OPEN_LEVELS; }
 
@@ -472,6 +473,10 @@ void ServerListScreen::buildTopLevelMenu(bool currentlyMuted, bool hasUnread) {
 			muteMenuOptions.push_back(TR("channel.menu.edit_mode"));
 			muteMenuTimeWindows.push_back(MENU_EDIT_MODE);
 		}
+	}
+	if (!muteMenuIsChannel) {
+		muteMenuOptions.push_back(TR("server.menu.organize"));
+		muteMenuTimeWindows.push_back(MENU_ORGANIZE);
 	}
 	if (hasUnread) {
 		muteMenuOptions.push_back(TR("server.menu.mark_read"));
@@ -1037,6 +1042,24 @@ void ServerListScreen::update() {
 		}
 	}
 	bool guildDataChanged = client.consumeGuildDataDirty();
+	// Folders saved here or changed on another device.
+	if (client.consumeFoldersDirty() && state == State::SELECTING_SERVER) {
+		std::string keepId =
+		    (selectedIndex >= 0 && selectedIndex < (int)listItems.size()) ? listItems[selectedIndex].id : "";
+		rebuildList();
+		selectedIndex = std::clamp(selectedIndex, 0, std::max(0, (int)listItems.size() - 1));
+		for (int i = 0; i < (int)listItems.size(); i++) {
+			if (listItems[i].id == keepId) {
+				selectedIndex = i;
+				break;
+			}
+		}
+		scrollOffset = std::clamp(scrollOffset, 0, std::max(0, selectedIndex));
+		if (selectedIndex >= scrollOffset + 5) {
+			scrollOffset = selectedIndex - 4;
+		}
+		refreshChannels();
+	}
 	bool privateChannelsChanged = client.consumePrivateChannelsDirty();
 	if (ackForVisibleChannel || guildDataChanged || ++unreadCacheTimer >= UNREAD_CACHE_INTERVAL) {
 		unreadCacheTimer = 0;
@@ -1204,6 +1227,10 @@ void ServerListScreen::update() {
 				} else if (tw == MENU_EDIT_CHANNEL) {
 					isMuteMenuOpen = false;
 					channelEditor.show(Discord::DiscordClient::getInstance().getChannel(muteMenuTargetId));
+				} else if (tw == MENU_ORGANIZE) {
+					isMuteMenuOpen = false;
+					ScreenManager::getInstance().pushScreen(ScreenType::ORGANIZE_SERVERS);
+					return;
 				} else if (tw == MENU_EDIT_MODE) {
 					isMuteMenuOpen = false;
 					enterEditMode();
@@ -1342,7 +1369,11 @@ void ServerListScreen::update() {
 		if (kDown & KEY_X) {
 			if (selectedIndex >= 0 && selectedIndex < (int)listItems.size()) {
 				const auto &item = listItems[selectedIndex];
-				if (!item.isFolder && !item.isDm) {
+				if (item.isFolder) {
+					ScreenManager::getInstance().pushScreen(ScreenType::ORGANIZE_SERVERS);
+					return;
+				}
+				if (!item.isDm) {
 					openMuteMenu(item.id);
 				}
 			}

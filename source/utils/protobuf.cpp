@@ -48,6 +48,19 @@ bool Reader::readBytes(const uint8_t *&data, size_t &size) {
 	return true;
 }
 
+bool Reader::readFixed64(uint64_t &value) {
+	if (end - pos < 8) {
+		error = true;
+		return false;
+	}
+	value = 0;
+	for (int i = 7; i >= 0; i--) {
+		value = (value << 8) | pos[i];
+	}
+	pos += 8;
+	return true;
+}
+
 bool Reader::readString(std::string &out) {
 	const uint8_t *data = nullptr;
 	size_t size = 0;
@@ -85,6 +98,36 @@ bool Reader::skip(uint32_t wireType) {
 		error = true;
 		return false;
 	}
+}
+
+void Writer::rawVarint(uint64_t value) {
+	while (value >= 0x80) {
+		out.push_back((char)((value & 0x7F) | 0x80));
+		value >>= 7;
+	}
+	out.push_back((char)value);
+}
+
+void Writer::rawFixed64(uint64_t value) {
+	for (int i = 0; i < 8; i++) {
+		out.push_back((char)((value >> (8 * i)) & 0xFF));
+	}
+}
+
+void Writer::varintField(uint32_t field, uint64_t value) {
+	rawVarint(((uint64_t)field << 3) | Reader::VARINT);
+	rawVarint(value);
+}
+
+void Writer::fixed64Field(uint32_t field, uint64_t value) {
+	rawVarint(((uint64_t)field << 3) | Reader::FIXED64);
+	rawFixed64(value);
+}
+
+void Writer::bytesField(uint32_t field, const std::string &bytes) {
+	rawVarint(((uint64_t)field << 3) | Reader::LENGTH);
+	rawVarint(bytes.size());
+	out += bytes;
 }
 
 } // namespace Proto

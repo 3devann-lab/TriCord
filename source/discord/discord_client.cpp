@@ -2,6 +2,7 @@
 #include "utils/file_utils.h"
 #include "core/system_status.h"
 #include "utils/markdown.h"
+#include "utils/protobuf.h"
 #include "discord/discord_client.h"
 #include "core/config.h"
 #include "discord/avatar_cache.h"
@@ -38,6 +39,8 @@
 #include <unordered_map>
 
 namespace Discord {
+
+bool parseGuildFoldersProto(const uint8_t *data, size_t size, std::vector<GuildFolder> &out);
 
 namespace {
 // Closing with anything but 1000 or 1001 keeps the session alive for a resume.
@@ -1204,6 +1207,19 @@ void DiscordClient::handleDispatch(const rapidjson::Document &doc) {
 				}
 			}
 			Utils::requestRedraw();
+		}
+	} else if (t == "USER_SETTINGS_PROTO_UPDATE") {
+		// Folders changed on another device (or echoed back after saving here).
+		if (d.HasMember("settings") && d["settings"].IsObject()) {
+			const rapidjson::Value &st = d["settings"];
+			if (st.HasMember("type") && st["type"].IsInt() && st["type"].GetInt() == 1 && st.HasMember("proto") &&
+			    st["proto"].IsString()) {
+				std::vector<unsigned char> raw = Utils::Base64::decode(st["proto"].GetString());
+				std::vector<GuildFolder> parsed;
+				if (!raw.empty() && parseGuildFoldersProto(raw.data(), raw.size(), parsed)) {
+					applyGuildFolders(parsed);
+				}
+			}
 		}
 	} else if (t == "USER_SETTINGS_UPDATE") {
 		handleUserSettingsUpdate(d);
@@ -3942,6 +3958,169 @@ bool DiscordClient::canCreateInvite(const std::string &channelId) {
 		}
 	}
 	return false;
+}
+
+// PreloadedUserSettings field 14: GuildFolders { repeated GuildFolder folders = 1; repeated fixed64 guild_positions = 2; }
+// GuildFolder { repeated fixed64 guild_ids = 1; Int64Value id = 2; StringValue name = 3; UInt64Value color = 4; }
+static std::string encodeGuildFolders(const std::vector<GuildFolder> &list) {
+	Utils::Proto::Writer folders;
+	for (const auto &folder : list) {
+		if (folder.guildIds.empty()) {
+			continue;
+		}
+		Utils::Proto::Writer entry;
+		Utils::Proto::Writer ids;
+		for (const auto &gid : folder.guildIds) {
+			ids.rawFixed64(strtoull(gid.c_str(), nullptr, 10));
+		}
+		entry.bytesField(1, ids.data());
+		if (!folder.id.empty()) {
+			Utils::Proto::Writer id;
+			id.varintField(1, (uint64_t)strtoll(folder.id.c_str(), nullptr, 10));
+			entry.bytesField(2, id.data());
+			if (!folder.name.empty()) {
+				Utils::Proto::Writer name;
+				name.bytesField(1, folder.name);
+				entry.bytesField(3, name.data());
+			}
+			if (folder.color != 0) {
+				Utils::Proto::Writer color;
+				color.varintField(1, (uint64_t)(uint32_t)folder.color);
+				entry.bytesField(4, color.data());
+			}
+		}
+		folders.bytesField(1, entry.data());
+	}
+	Utils::Proto::Writer settings;
+	settings.bytesField(14, folders.data());
+	return settings.data();
+}
+
+static bool readWrapped(const uint8_t *data, size_t size, uint64_t *number, std::string *text) {
+	Utils::Proto::Reader r(data, size);
+	uint32_t field, wire;
+	while (r.next(field, wire)) {
+		if (field == 1 && wire == Utils::Proto::Reader::VARINT && number) {
+			r.readVarint(*number);
+		} else if (field == 1 && wire == Utils::Proto::Reader::LENGTH && text) {
+			r.readString(*text);
+		} else if (!r.skip(wire)) {
+			return false;
+		}
+	}
+	return !r.failed();
+}
+
+// Finds field 14 in a settings proto; false when it is not there (a partial update without folders).
+bool parseGuildFoldersProto(const uint8_t *data, size_t size, std::vector<GuildFolder> &out) {
+	Utils::Proto::Reader top(data, size);
+	uint32_t field, wire;
+	while (top.next(field, wire)) {
+		if (field != 14 || wire != Utils::Proto::Reader::LENGTH) {
+			if (!top.skip(wire)) {
+				return false;
+			}
+			continue;
+		}
+		const uint8_t *fdata;
+		size_t fsize;
+		if (!top.readBytes(fdata, fsize)) {
+			return false;
+		}
+		out.clear();
+		Utils::Proto::Reader folders(fdata, fsize);
+		uint32_t ff, fw;
+		while (folders.next(ff, fw)) {
+			if (ff != 1 || fw != Utils::Proto::Reader::LENGTH) {
+				folders.skip(fw);
+				continue;
+			}
+			const uint8_t *edata;
+			size_t esize;
+			if (!folders.readBytes(edata, esize)) {
+				break;
+			}
+			GuildFolder folder;
+			Utils::Proto::Reader entry(edata, esize);
+			uint32_t ef, ew;
+			while (entry.next(ef, ew)) {
+				const uint8_t *vdata;
+				size_t vsize;
+				if (ef == 1 && ew == Utils::Proto::Reader::LENGTH && entry.readBytes(vdata, vsize)) {
+					Utils::Proto::Reader ids(vdata, vsize);
+					uint64_t id;
+					while (!ids.atEnd() && ids.readFixed64(id)) {
+						folder.guildIds.push_back(std::to_string(id));
+					}
+				} else if (ef == 1 && ew == Utils::Proto::Reader::FIXED64) {
+					uint64_t id;
+					if (entry.readFixed64(id)) {
+						folder.guildIds.push_back(std::to_string(id));
+					}
+				} else if (ef >= 2 && ef <= 4 && ew == Utils::Proto::Reader::LENGTH && entry.readBytes(vdata, vsize)) {
+					uint64_t number = 0;
+					std::string text;
+					readWrapped(vdata, vsize, &number, &text);
+					if (ef == 2) {
+						folder.id = std::to_string((int64_t)number);
+					} else if (ef == 3) {
+						folder.name = text;
+					} else {
+						folder.color = (int)number;
+					}
+				} else if (!entry.skip(ew)) {
+					break;
+				}
+			}
+			out.push_back(folder);
+		}
+		return true;
+	}
+	return false;
+}
+
+void DiscordClient::applyGuildFolders(std::vector<GuildFolder> list) {
+	{
+		std::lock_guard<std::recursive_mutex> lock(clientMutex);
+		folders = std::move(list);
+	}
+	guildDataDirty.store(true);
+	foldersDirty.store(true);
+	Utils::requestRedraw();
+}
+
+void DiscordClient::saveGuildFolders(const std::vector<GuildFolder> &list, ActionCallback cb) {
+	std::string proto = encodeGuildFolders(list);
+	std::string body = "{\"settings\":\"" +
+	                   Utils::Base64::encode((const unsigned char *)proto.data(), proto.size()) + "\"}";
+	Network::NetworkManager::getInstance().enqueue(
+	    "https://discord.com/api/v9/users/@me/settings-proto/1", "PATCH", body, Network::RequestPriority::INTERACTIVE,
+	    [this, list, cb](Network::HttpResponse &resp) {
+		    if (resp.statusCode != 200) {
+			    Logger::log("[Folders] Save failed: %ld %s", resp.statusCode, resp.body.substr(0, 200).c_str());
+			    if (cb) {
+				    cb(false, resp.statusCode == 429 ? "rate" : "");
+			    }
+			    return;
+		    }
+		    // The answer is the account's whole settings; its folders are what Discord now has.
+		    std::vector<GuildFolder> saved = list;
+		    rapidjson::Document doc;
+		    doc.Parse(resp.body.c_str());
+		    if (!doc.HasParseError() && doc.IsObject()) {
+			    std::vector<unsigned char> raw = Utils::Base64::decode(Utils::Json::getString(doc, "settings"));
+			    std::vector<GuildFolder> parsed;
+			    if (!raw.empty() && parseGuildFoldersProto(raw.data(), raw.size(), parsed)) {
+				    saved = parsed;
+			    }
+		    }
+		    Logger::log("[Folders] Saved %zu entries", saved.size());
+		    applyGuildFolders(saved);
+		    if (cb) {
+			    cb(true, "");
+		    }
+	    },
+	    {{"Authorization", token}, {"Content-Type", "application/json"}});
 }
 
 std::vector<Message> DiscordClient::parseMessages(const std::string &json) {
