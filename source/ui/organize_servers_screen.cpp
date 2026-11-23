@@ -248,19 +248,30 @@ void OrganizeServersScreen::update() {
 		return;
 	}
 
+	// Leaving with changes asks first: A saves, X throws them away, B keeps editing.
+	if (confirmLeave) {
+		if (kDown & KEY_A) {
+			confirmLeave = false;
+			save();
+		} else if (kDown & KEY_X) {
+			sm.returnToPreviousScreen();
+		} else if (kDown & KEY_B) {
+			confirmLeave = false;
+			status.clear();
+		}
+		return;
+	}
+
 	if (kDown & KEY_B) {
 		if (holding) {
 			holding = false;
-		} else if (dirty && !confirmLeave) {
+		} else if (dirty) {
 			confirmLeave = true;
-			status = TR("organize.confirm_discard");
+			status = TR("organize.confirm_leave");
 		} else {
 			sm.returnToPreviousScreen();
 		}
 		return;
-	}
-	if (kDown) {
-		confirmLeave = confirmLeave && (kDown & KEY_B);
 	}
 
 	int dir = 0;
@@ -289,7 +300,8 @@ void OrganizeServersScreen::update() {
 	if (kDown & KEY_A) {
 		holding = !holding;
 	}
-	if (kDown & KEY_START) {
+	// START closes the app, so saving is SELECT (or B, which asks).
+	if (kDown & KEY_SELECT) {
 		holding = false;
 		save();
 		return;
@@ -414,6 +426,17 @@ void OrganizeServersScreen::renderBottom(C3D_RenderTarget *target) {
 	(void)target;
 	C2D_DrawRectSolid(0, 0, 0.1f, 320, 240, ScreenManager::colorBackgroundDark());
 	std::vector<std::string> lines;
+	if (confirmLeave) {
+		lines = {TR("organize.confirm_leave"), "\uE000: " + TR("organize.save"), "\uE002: " + TR("organize.discard"),
+		         "\uE001: " + TR("organize.keep_editing")};
+		float y = 30.0f;
+		for (const auto &line : lines) {
+			drawText(16.0f, y, 0.5f, 0.48f, 0.48f, ScreenManager::colorText(), line);
+			y += 22.0f;
+		}
+		drawKeyHints(TR("organize.saved_to_account"));
+		return;
+	}
 	if (holding) {
 		lines = {TR("organize.help.moving1"), TR("organize.help.moving2")};
 	} else if (!tokens.empty() && tokens[selected].kind == Kind::FOLDER_START) {
@@ -425,7 +448,7 @@ void OrganizeServersScreen::renderBottom(C3D_RenderTarget *target) {
 			lines.push_back(": " + TR("organize.take_out"));
 		}
 	}
-	lines.push_back("START: " + TR("organize.save"));
+	lines.push_back("SELECT: " + TR("organize.save"));
 	float y = 20.0f;
 	for (const auto &line : lines) {
 		drawText(16.0f, y, 0.5f, 0.45f, 0.45f, ScreenManager::colorText(), line);
