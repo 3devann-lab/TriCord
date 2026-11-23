@@ -652,7 +652,10 @@
     "organize.help.moving2": "edge puts it in or takes it out. A: drop",
     "organize.saving": "Saving...",
     "organize.saved": "Server folders saved to your account",
-    "organize.save_failed": "Couldn't save. Check your connection and press START to try again.",
+    "organize.save_failed": "Couldn't save. Check your connection and press SELECT to try again.",
     "organize.confirm_discard": "Press B again to leave without saving.",
-    "organize.saved_to_account": "Saves to your account"
+    "organize.saved_to_account": "Saves to your account",
+    "organize.confirm_leave": "Save your changes before leaving?",
+    "organize.discard": "Leave without saving",
+    "organize.keep_editing": "Keep editing"
 }
