@@ -19,6 +19,7 @@
 #include "ui/text_measure_cache.h"
 #include "ui/theme_manager_screen.h"
 #include "ui/updater_screen.h"
+#include "ui/organize_servers_screen.h"
 #include "core/updater.h"
 #include "utils/redraw.h"
 #include "utils/utf8_utils.h"
@@ -351,6 +352,9 @@ void ScreenManager::setScreen(ScreenType type) {
 		break;
 	case ScreenType::UPDATER:
 		currentScreen = std::make_unique<UpdaterScreen>();
+		break;
+	case ScreenType::ORGANIZE_SERVERS:
+		currentScreen = std::make_unique<OrganizeServersScreen>();
 		break;
 	}
 

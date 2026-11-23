@@ -132,6 +132,7 @@ class DiscordClient {
 	}
 
 	bool consumeGuildDataDirty() { return guildDataDirty.exchange(false); }
+	bool consumeFoldersDirty() { return foldersDirty.exchange(false); }
 	bool consumePrivateChannelsDirty() { return privateChannelsDirty.exchange(false); }
 
 	std::recursive_mutex &getMutex() { return clientMutex; }
@@ -205,6 +206,10 @@ class DiscordClient {
 
 	const std::vector<Guild> &getGuilds() { return guilds; }
 	const std::vector<GuildFolder> &getGuildFolders() { return folders; }
+	// Saves server folders and order to the account (settings-proto 1), so every device sees them.
+	// Entries without an id are servers outside any folder.
+	void saveGuildFolders(const std::vector<GuildFolder> &list, ActionCallback cb);
+	void applyGuildFolders(std::vector<GuildFolder> list);
 	const std::vector<Channel> &getPrivateChannels() { return privateChannels; }
 	const std::map<std::string, ReadState> &getReadStates() const { return readStates; }
 	const std::map<std::string, GuildNotificationSettings> &getNotificationSettings() const {
@@ -513,6 +518,7 @@ class DiscordClient {
 	std::atomic<bool> readStateDirty{false};
 	std::string readStateDirtyChannelId;
 	std::atomic<bool> guildDataDirty{false};
+	std::atomic<bool> foldersDirty{false};
 	std::atomic<bool> privateChannelsDirty{false};
 	Utils::WorkerThread workerThread;
 	Utils::WorkerThread networkThread;
